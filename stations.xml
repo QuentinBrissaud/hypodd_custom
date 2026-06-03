@@ -1,0 +1,209 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<FDSNStationXML xmlns="http://www.fdsn.org/xml/station/1" schemaVersion="1.2">
+  <Source>csv_to_obspy_xml.py</Source>
+  <Module>ObsPy 1.4.2</Module>
+  <ModuleURI>https://www.obspy.org</ModuleURI>
+  <Created>2026-06-03T20:56:42.625788Z</Created>
+  <Network code="AK">
+    <Station code="AKASG">
+      <Latitude unit="DEGREES">50.7012</Latitude>
+      <Longitude unit="DEGREES">29.2242</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AKASG</Name>
+      </Site>
+    </Station>
+    <Station code="AK01">
+      <Latitude unit="DEGREES">50.6911</Latitude>
+      <Longitude unit="DEGREES">29.2131</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK01</Name>
+      </Site>
+    </Station>
+    <Station code="AK02">
+      <Latitude unit="DEGREES">50.6573</Latitude>
+      <Longitude unit="DEGREES">29.2057</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK02</Name>
+      </Site>
+    </Station>
+    <Station code="AK03">
+      <Latitude unit="DEGREES">50.7263</Latitude>
+      <Longitude unit="DEGREES">29.2217</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK03</Name>
+      </Site>
+    </Station>
+    <Station code="AK04">
+      <Latitude unit="DEGREES">50.7226</Latitude>
+      <Longitude unit="DEGREES">29.166</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK04</Name>
+      </Site>
+    </Station>
+    <Station code="AK05">
+      <Latitude unit="DEGREES">50.6197</Latitude>
+      <Longitude unit="DEGREES">29.2036</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK05</Name>
+      </Site>
+    </Station>
+    <Station code="AK06">
+      <Latitude unit="DEGREES">50.5858</Latitude>
+      <Longitude unit="DEGREES">29.1985</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK06</Name>
+      </Site>
+    </Station>
+    <Station code="AK07">
+      <Latitude unit="DEGREES">50.5507</Latitude>
+      <Longitude unit="DEGREES">29.2044</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK07</Name>
+      </Site>
+    </Station>
+    <Station code="AK08">
+      <Latitude unit="DEGREES">50.6338</Latitude>
+      <Longitude unit="DEGREES">29.2548</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK08</Name>
+      </Site>
+    </Station>
+    <Station code="AK09">
+      <Latitude unit="DEGREES">50.6151</Latitude>
+      <Longitude unit="DEGREES">29.2846</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK09</Name>
+      </Site>
+    </Station>
+    <Station code="AK10">
+      <Latitude unit="DEGREES">50.599</Latitude>
+      <Longitude unit="DEGREES">29.2513</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK10</Name>
+      </Site>
+    </Station>
+    <Station code="AK11">
+      <Latitude unit="DEGREES">50.6784</Latitude>
+      <Longitude unit="DEGREES">29.1677</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK11</Name>
+      </Site>
+    </Station>
+    <Station code="AK12">
+      <Latitude unit="DEGREES">50.6437</Latitude>
+      <Longitude unit="DEGREES">29.1549</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK12</Name>
+      </Site>
+    </Station>
+    <Station code="AK13">
+      <Latitude unit="DEGREES">50.6129</Latitude>
+      <Longitude unit="DEGREES">29.0606</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK13</Name>
+      </Site>
+    </Station>
+    <Station code="AK14">
+      <Latitude unit="DEGREES">50.6306</Latitude>
+      <Longitude unit="DEGREES">29.1076</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK14</Name>
+      </Site>
+    </Station>
+    <Station code="AK15">
+      <Latitude unit="DEGREES">50.6951</Latitude>
+      <Longitude unit="DEGREES">29.124</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK15</Name>
+      </Site>
+    </Station>
+    <Station code="AK16">
+      <Latitude unit="DEGREES">50.67</Latitude>
+      <Longitude unit="DEGREES">29.1058</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK16</Name>
+      </Site>
+    </Station>
+    <Station code="AK17">
+      <Latitude unit="DEGREES">50.6851</Latitude>
+      <Longitude unit="DEGREES">29.0574</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK17</Name>
+      </Site>
+    </Station>
+    <Station code="AK18">
+      <Latitude unit="DEGREES">50.7221</Latitude>
+      <Longitude unit="DEGREES">29.0676</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK18</Name>
+      </Site>
+    </Station>
+    <Station code="AK19">
+      <Latitude unit="DEGREES">50.7222</Latitude>
+      <Longitude unit="DEGREES">29.0116</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK19</Name>
+      </Site>
+    </Station>
+    <Station code="AK20">
+      <Latitude unit="DEGREES">50.743</Latitude>
+      <Longitude unit="DEGREES">29.01</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK20</Name>
+      </Site>
+    </Station>
+    <Station code="AK21">
+      <Latitude unit="DEGREES">50.7764</Latitude>
+      <Longitude unit="DEGREES">29.0419</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK21</Name>
+      </Site>
+    </Station>
+    <Station code="AK22">
+      <Latitude unit="DEGREES">50.7608</Latitude>
+      <Longitude unit="DEGREES">29.0712</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK22</Name>
+      </Site>
+    </Station>
+    <Station code="AK23">
+      <Latitude unit="DEGREES">50.7625</Latitude>
+      <Longitude unit="DEGREES">29.1254</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AK23</Name>
+      </Site>
+    </Station>
+    <Station code="AKBB">
+      <Latitude unit="DEGREES">50.7012</Latitude>
+      <Longitude unit="DEGREES">29.2242</Longitude>
+      <Elevation unit="METERS">0.0</Elevation>
+      <Site>
+        <Name>AKBB</Name>
+      </Site>
+    </Station>
+  </Network>
+</FDSNStationXML>
