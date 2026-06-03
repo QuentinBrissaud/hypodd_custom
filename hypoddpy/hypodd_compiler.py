@@ -113,10 +113,20 @@ class HypoDDCompiler(object):
         self.paths["hypodd_unpack_dir"] = os.path.join(
             self.working_dir, "hypodd_src"
         )
-        # Some paths in the unpacked archive.
-        self.paths["make_directory"] = os.path.join(
-            self.paths["hypodd_unpack_dir"], "HYPODD", "src"
+        self._set_source_paths(
+            os.path.join(self.paths["hypodd_unpack_dir"], "HYPODD")
         )
+
+    def _set_source_paths(self, source_root):
+        """
+        Set paths inside the unpacked HypoDD source tree.
+
+        Different HypoDD archives unpack to differently-cased top-level
+        directories, e.g. HYPODD or HypoDD. The compiler should not care.
+        """
+        self.paths["source_root"] = source_root
+        # Some paths in the unpacked archive.
+        self.paths["make_directory"] = os.path.join(source_root, "src")
         # The resulting binaries directly after the compilation.
         self.paths["compiled_hypodd_binary"] = os.path.join(
             self.paths["make_directory"], "hypoDD", "hypoDD"
@@ -125,13 +135,33 @@ class HypoDDCompiler(object):
             self.paths["make_directory"], "ph2dt", "ph2dt"
         )
         # The include directory.
-        self.paths["include_dir"] = os.path.join(
-            self.paths["hypodd_unpack_dir"], "HYPODD", "include"
-        )
+        self.paths["include_dir"] = os.path.join(source_root, "include")
         # The hypoDD.inc file
         self.paths["hypoDD.inc"] = os.path.join(
             self.paths["include_dir"], "hypoDD.inc"
         )
+
+    def _find_unpacked_source_root(self):
+        """
+        Return the directory in hypodd_src that looks like the HypoDD source.
+        """
+        unpack_dir = self.paths["hypodd_unpack_dir"]
+        candidates = [
+            os.path.join(unpack_dir, name)
+            for name in os.listdir(unpack_dir)
+        ]
+        for candidate in candidates:
+            if not os.path.isdir(candidate):
+                continue
+            if (
+                os.path.isdir(os.path.join(candidate, "src"))
+                and os.path.exists(
+                    os.path.join(candidate, "include", "hypoDD.inc")
+                )
+            ):
+                return candidate
+        msg = "Could not find unpacked HypoDD source tree in %s" % unpack_dir
+        raise HypoDDCompilationError(msg)
 
     def configure(
         self,
@@ -198,6 +228,7 @@ class HypoDDCompiler(object):
 
         tar = tarfile.open(HYPODD_ARCHIVE, "r:gz")
         tar.extractall(unpack_dir)
+        self._set_source_paths(self._find_unpacked_source_root())
         self.log("Unpacking HypoDD archive done.")
 
     def make(self):
