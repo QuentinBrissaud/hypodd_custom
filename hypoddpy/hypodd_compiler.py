@@ -35,7 +35,7 @@ HYPODD_MD5_HASHES = [
     "ac7fb5829abef23aa91f1f8a115e2b45",
     "94228305b2370c4f3371fc6cb76f92c5",
 ]
-HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v3"
+HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v4"
 
 
 class HypoDDCompilationError(Exception):
@@ -59,7 +59,12 @@ class HypoDDCompiler(object):
     >>> hyp_comp.make()
     """
 
-    def __init__(self, working_dir, log_function):
+    def __init__(
+        self,
+        working_dir,
+        log_function,
+        enforce_mean_shift_constraint=False,
+    ):
         """
         :param working_dir: The working directory. Everything will happen in
             there.
@@ -67,6 +72,9 @@ class HypoDDCompiler(object):
         """
         # Set the log function.
         self.log = log_function
+        self.enforce_mean_shift_constraint = bool(
+            enforce_mean_shift_constraint
+        )
         # Set the working dir and create it if necessary.
         self.working_dir = working_dir
         if not os.path.exists(self.working_dir):
@@ -234,7 +242,15 @@ class HypoDDCompiler(object):
         tar.extractall(unpack_dir)
         self._set_source_paths(self._find_unpacked_source_root())
         self._patch_unpacked_hypodd_sources()
+        if self.enforce_mean_shift_constraint:
+            self._patch_lsqr_mean_shift_constraint()
         self.log("Unpacking HypoDD archive done.")
+
+    def _diagnostic_patch_stamp_value(self):
+        return "%s;mean_shift=%s" % (
+            HYPODD_DIAGNOSTIC_PATCH_VERSION,
+            int(self.enforce_mean_shift_constraint),
+        )
 
     def _patch_unpacked_hypodd_sources(self):
         """
@@ -420,6 +436,88 @@ class HypoDDCompiler(object):
         with open(hypodd_path, "w") as open_file:
             open_file.write(hypodd_source)
 
+    def _patch_lsqr_mean_shift_constraint(self):
+        """
+        Enforce the cluster mean update constraint in the LSQR solver.
+
+        The SVD solver already adds four rows enforcing zero mean x/y/z/t
+        update. The LSQR source contains a commented version of the same idea;
+        this patch activates it and fixes the sparse row-count bookkeeping.
+        """
+        path = os.path.join(
+            self.paths["make_directory"], "hypoDD", "lsfit_lsqr.f"
+        )
+        with open(path, "r") as open_file:
+            source = open_file.read()
+        if "CODEX LSQR mean-shift constraint patch" in source:
+            return
+
+        source = source.replace(
+            "real\t\td(MAXDATA+4)\t! Data vector",
+            "real\t\td(MAXDATA+4*MAXEVE+4)\t! Data vector",
+            1,
+        )
+        source = source.replace(
+            "real\t\twtinv(MAXDATA+4)! +4 = mean shift constr\n"
+            "\treal\t\twt(MAXDATA+4)",
+            "real\t\twtinv(MAXDATA+4*MAXEVE+4)\n"
+            "\treal\t\twt(MAXDATA+4*MAXEVE+4)",
+            1,
+        )
+        source = source.replace(
+            "      nar = 8*ndt       ! If mean shift not contstrained\n"
+            "c      nar= nar+4*nev   ! If mean shift contstrained (four extra rows)",
+            "      nar = 8*ndt + 4*nev\n"
+            "c     CODEX LSQR mean-shift constraint patch: equation (9).",
+            1,
+        )
+
+        old_block = """c--- add four extra rows to make mean shift zero
+c  if this is activ, set nar and nndt at the beginning for this routine to
+c  proper values!!!!
+c      do i=1,4
+c         d(ndt+i)= 0                   ! zero shift
+c         wt(ndt+i)= 1                  ! weight for the constraint
+c         wtinv(ndt+i)= 1/wt(ndt+i)
+c         do j=1,nev
+c            iw(1 + nrw +(i-1)*nev+j)= ndt +i 
+c            iw(1 + nar + nrw +(i-1)*nev+j)= (i-1) + j*4-3
+c            rw(nrw + (i-1)*nev+j)= 10
+c         enddo
+c      enddo
+c      nrw= nrw+4*nev
+c      nndt= nndt+4"""
+        new_block = """c--- add four extra rows to make mean shift zero
+c     CODEX LSQR mean-shift constraint patch: equation (9).
+      do i=1,4
+         d(nndt+i)= 0.0
+         wt(nndt+i)= 1.0
+         wtinv(nndt+i)= 1.0
+         do j=1,nev
+            iw(1 + nrw +(i-1)*nev+j)= nndt + i
+            iw(1 + nar + nrw +(i-1)*nev+j)= (i-1) + j*4-3
+            rw(nrw + (i-1)*nev+j)= 10.0
+         enddo
+      enddo
+      nrw= nrw+4*nev
+      nndt= nndt+4"""
+        if old_block not in source:
+            msg = "Could not patch LSQR mean-shift constraint block."
+            raise HypoDDCompilationError(msg)
+        source = source.replace(old_block, new_block, 1)
+
+        source = source.replace(
+            "      nrw= nrw + k-1\n"
+            "      if(nrw.ne.nar)stop'FATAL ERROR (lsfit_lsqr): nrw != nar'",
+            "      nrw= nrw + k-1\n"
+            "      nndt= nndt + k-1\n"
+            "      if(nrw.ne.nar)stop'FATAL ERROR (lsfit_lsqr): nrw != nar'",
+            1,
+        )
+
+        with open(path, "w") as open_file:
+            open_file.write(source)
+
     def make(self):
         if self.is_configured is not True:
             msg = "Compiler object need to be configured first."
@@ -507,7 +605,7 @@ class HypoDDCompiler(object):
             return False
         with open(self.paths["diagnostic_patch_stamp"], "r") as open_file:
             patch_version = open_file.read().strip()
-        if patch_version != HYPODD_DIAGNOSTIC_PATCH_VERSION:
+        if patch_version != self._diagnostic_patch_stamp_value():
             return False
         # Check if the newly created hypoDD.inc file is identical to the old
         # one.
@@ -556,5 +654,5 @@ class HypoDDCompiler(object):
             self.paths["hypoDD.inc"], self.paths["old hypoDD.inc file"]
         )
         with open(self.paths["diagnostic_patch_stamp"], "w") as open_file:
-            open_file.write(HYPODD_DIAGNOSTIC_PATCH_VERSION)
+            open_file.write(self._diagnostic_patch_stamp_value())
         self.log("Compiling HypoDD done.")

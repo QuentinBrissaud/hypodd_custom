@@ -52,6 +52,7 @@ class HypoDDRelocator(object):
         use_cross_correlation=True,
         event_fix=None,
         fixed_depth_km=None,
+        enforce_mean_shift_constraint=False,
     ):
         """
         :param working_dir: The working directory where all temporary and final
@@ -99,6 +100,9 @@ class HypoDDRelocator(object):
         :param fixed_depth_km: Optional depth in km to write for all events in
             phase.dat and event.sel. Use 0.01 with event_fix=1 for a near
             surface fixed-depth relocation.
+        :param enforce_mean_shift_constraint: If True, patch HypoDD's LSQR
+            solver to add four rows enforcing zero mean x/y/z/origin-time
+            update per cluster, matching the SVD mean-shift constraint.
         """
         self.working_dir = working_dir
         if not os.path.exists(working_dir):
@@ -152,6 +156,9 @@ class HypoDDRelocator(object):
                 msg = "fixed_depth_km must be non-negative."
                 raise HypoDDException(msg)
         self.fixed_depth_km = fixed_depth_km
+        self.enforce_mean_shift_constraint = bool(
+            enforce_mean_shift_constraint
+        )
 
         # Setup logging.
         logging.basicConfig(
@@ -333,7 +340,8 @@ class HypoDDRelocator(object):
 
         Supported sections:
             [relocator]
-                use_cross_correlation, event_fix, fixed_depth_km
+                use_cross_correlation, event_fix, fixed_depth_km,
+                enforce_mean_shift_constraint
 
             [ph2dt]
                 MINWGHT, MAXDIST, MAXSEP, MAXNGH, MINLNK, MINOBS, MAXOBS
@@ -364,6 +372,10 @@ class HypoDDRelocator(object):
             if "fixed_depth_km" in section:
                 value = section.get("fixed_depth_km")
                 self.fixed_depth_km = None if value == "" else float(value)
+            if "enforce_mean_shift_constraint" in section:
+                self.enforce_mean_shift_constraint = section.getboolean(
+                    "enforce_mean_shift_constraint"
+                )
 
         if parser.has_section("compiler"):
             for key, value in parser.items("compiler"):
@@ -930,7 +942,11 @@ class HypoDDRelocator(object):
                 fh.write(os.linesep)
 
             compiler = HypoDDCompiler(
-                working_dir=self.working_dir, log_function=logfunc
+                working_dir=self.working_dir,
+                log_function=logfunc,
+                enforce_mean_shift_constraint=(
+                    self.enforce_mean_shift_constraint
+                ),
             )
             compiler_config = {
                 "MAXEVE": len(self.events) + 30,
