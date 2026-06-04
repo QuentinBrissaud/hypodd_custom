@@ -10,7 +10,7 @@ import argparse
 import csv
 import math
 import re
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -159,6 +159,38 @@ def event_double_difference_summary_rows(dd_rows):
             )
         rows.append(row)
     return rows
+
+
+def paired_double_difference_rows(original_rows, relocated_rows):
+    """
+    Return original/relocated DD rows restricted to observations in both sets.
+
+    HypoDD can skip observations during later iterations, so initial and final
+    diagnostic files do not necessarily contain identical rows. Matching by
+    event pair, station, and type makes before/after comparisons meaningful.
+    """
+    def key(row):
+        return (
+            row["event_id_1"],
+            row["event_id_2"],
+            row["station_id"],
+            row["type_index"],
+        )
+
+    original_by_key = defaultdict(deque)
+    for row in original_rows:
+        original_by_key[key(row)].append(row)
+
+    paired_original = []
+    paired_relocated = []
+    for row in relocated_rows:
+        row_key = key(row)
+        if not original_by_key[row_key]:
+            continue
+        paired_original.append(original_by_key[row_key].popleft())
+        paired_relocated.append(row)
+
+    return paired_original, paired_relocated
 
 
 def combined_event_residual_summary_rows(pick_event_rows, dd_event_rows):
@@ -694,8 +726,7 @@ def read_station_residuals(path):
 def parse_hypodd_log(path):
     rows = []
     current = None
-    rmscc = math.nan
-    rmsct = math.nan
+    summary_mode = None
     with open(path, "r", encoding="utf-8", errors="replace") as open_file:
         for line in open_file:
             match = re.search(r"===ITERATION\s+(\d+)\s+\(\s*(\d+)\)", line)
@@ -704,66 +735,118 @@ def parse_hypodd_log(path):
                     "iteration": int(match.group(1)),
                     "global_iteration": int(match.group(2)),
                 }
-                rmscc = math.nan
-                rmsct = math.nan
+                summary_mode = None
                 continue
             if current is None:
                 continue
-            match = re.search(r"weighted cc rms \[s\] \(RMSCC\) =\s*([0-9.Ee+-]+)", line)
-            if match:
-                rmscc = float(match.group(1))
+
+            if "Residual summary of initial data:" in line:
+                summary_mode = "initial"
                 continue
-            match = re.search(r"weighted ct rms \[s\] \(RMSCT\) =\s*([0-9.Ee+-]+)", line)
-            if match:
-                rmsct = float(match.group(1))
+            if line.strip() == "Residual summary:":
+                summary_mode = "post"
                 continue
-            parts = line.split()
-            if len(parts) >= 10 and parts[0].isdigit():
-                row = dict(current)
-                row.update({"rms_cc_s": rmscc, "rms_ct_s": rmsct})
-                if len(parts) >= 15:
-                    row.update(
-                        {
-                            "events": int(parts[1]),
-                            "ct_percent": _hypodd_log_float(parts[2]),
-                            "cc_percent": _hypodd_log_float(parts[3]),
-                            "rms_ct_percent": _hypodd_log_float(parts[4]),
-                            "rms_ct_ms": _hypodd_log_float(parts[5]),
-                            "rms_cc_percent": _hypodd_log_float(parts[6]),
-                            "rms_cc_ms": _hypodd_log_float(parts[7]),
-                            "rms_station_percent": _hypodd_log_float(parts[8]),
-                            "rms_station_ms": _hypodd_log_float(parts[9]),
-                            "mean_abs_dx_m": _hypodd_log_float(parts[10]),
-                            "mean_abs_dy_m": _hypodd_log_float(parts[11]),
-                            "mean_abs_dz_m": _hypodd_log_float(parts[12]),
-                            "mean_abs_dt_ms": _hypodd_log_float(parts[13]),
-                            "origin_shift_m": _hypodd_log_float(parts[14]),
-                            "airquake_count": _hypodd_log_int(parts[15]),
-                        }
+
+            if summary_mode is not None:
+                match = re.search(r"absolute mean \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_absolute_mean_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
                     )
-                    if len(parts) > 16:
-                        row["condition_number"] = _hypodd_log_float(parts[16])
-                elif len(parts) >= 13:
-                    row.update(
-                        {
-                            "events": int(parts[1]),
-                            "ct_percent": _hypodd_log_float(parts[2]),
-                            "rms_ct_percent": _hypodd_log_float(parts[3]),
-                            "rms_ct_ms": _hypodd_log_float(parts[4]),
-                            "rms_station_percent": _hypodd_log_float(parts[5]),
-                            "rms_station_ms": _hypodd_log_float(parts[6]),
-                            "mean_abs_dx_m": _hypodd_log_float(parts[7]),
-                            "mean_abs_dy_m": _hypodd_log_float(parts[8]),
-                            "mean_abs_dz_m": _hypodd_log_float(parts[9]),
-                            "mean_abs_dt_ms": _hypodd_log_float(parts[10]),
-                            "origin_shift_m": _hypodd_log_float(parts[11]),
-                            "airquake_count": _hypodd_log_int(parts[12]),
-                        }
+                    continue
+                match = re.search(r"weighted mean \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_weighted_mean_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
                     )
-                    if len(parts) > 13:
-                        row["condition_number"] = _hypodd_log_float(parts[13])
-                rows.append(row)
-                current = None
+                    continue
+                match = re.search(r"absolute variance \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_absolute_variance_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    continue
+                match = re.search(r"weighted variance \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_weighted_variance_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    continue
+                match = re.search(r"absolute cc rms \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_absolute_cc_rms_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    continue
+                match = re.search(r"weighted cc rms \[s\](?: \(RMSCC\))? =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_weighted_cc_rms_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    current["rms_cc_s"] = _hypodd_log_float(match.group(1))
+                    continue
+                match = re.search(r"absolute ct rms \[s\] =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_absolute_ct_rms_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    continue
+                match = re.search(r"weighted ct rms \[s\](?: \(RMSCT\))? =\s*([0-9.Ee+*\-]+)", line)
+                if match:
+                    current["%s_weighted_ct_rms_s" % summary_mode] = (
+                        _hypodd_log_float(match.group(1))
+                    )
+                    current["rms_ct_s"] = _hypodd_log_float(match.group(1))
+                    continue
+
+            match = re.search(r"^\s*(\d+)\s+\d+\s+\d+\s+", line)
+            if match:
+                parts = line.split()
+                if len(parts) >= 14:
+                    current["table_iteration"] = int(parts[0])
+                    current["events_percent"] = _hypodd_log_float(parts[2])
+                    current["ct_percent"] = _hypodd_log_float(parts[3])
+                    current["cc_percent"] = _hypodd_log_float(parts[4])
+                    current["table_rms_ct_ms"] = _hypodd_log_float(parts[5])
+                    current["table_rms_ct_percent"] = _hypodd_log_float(parts[6])
+                    current["table_rms_cc_ms"] = _hypodd_log_float(parts[7])
+                    current["table_rms_cc_percent"] = _hypodd_log_float(parts[8])
+                    current["rms_station_ms"] = _hypodd_log_float(parts[9])
+                    current["mean_abs_dx_m"] = _hypodd_log_float(parts[10])
+                    current["mean_abs_dy_m"] = _hypodd_log_float(parts[11])
+                    current["mean_abs_dz_m"] = _hypodd_log_float(parts[12])
+                    current["mean_abs_dt_ms"] = _hypodd_log_float(parts[13])
+                    if len(parts) > 14:
+                        current["origin_shift_m"] = _hypodd_log_float(parts[14])
+                    if len(parts) > 15:
+                        current["airquake_count"] = _hypodd_log_int(parts[15])
+                    if "rms_ct_s" not in current:
+                        current["rms_ct_s"] = current["table_rms_ct_ms"] / 1000.0
+                    if "rms_cc_s" not in current:
+                        current["rms_cc_s"] = current["table_rms_cc_ms"] / 1000.0
+                    rows.append(current)
+                    current = None
+                    summary_mode = None
+                elif len(parts) >= 12:
+                    current["table_iteration"] = int(parts[0])
+                    current["events_percent"] = _hypodd_log_float(parts[2])
+                    current["ct_percent"] = _hypodd_log_float(parts[3])
+                    current["table_rms_ct_ms"] = _hypodd_log_float(parts[4])
+                    current["table_rms_ct_percent"] = _hypodd_log_float(parts[5])
+                    current["rms_station_ms"] = _hypodd_log_float(parts[6])
+                    current["mean_abs_dx_m"] = _hypodd_log_float(parts[7])
+                    current["mean_abs_dy_m"] = _hypodd_log_float(parts[8])
+                    current["mean_abs_dz_m"] = _hypodd_log_float(parts[9])
+                    current["mean_abs_dt_ms"] = _hypodd_log_float(parts[10])
+                    current["origin_shift_m"] = _hypodd_log_float(parts[11])
+                    if len(parts) > 12:
+                        current["airquake_count"] = _hypodd_log_int(parts[12])
+                    if "rms_ct_s" not in current:
+                        current["rms_ct_s"] = current["table_rms_ct_ms"] / 1000.0
+                    rows.append(current)
+                    current = None
+                    summary_mode = None
+                continue
     return rows
 
 
@@ -927,9 +1010,33 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
     if convergence_rows:
         plt.figure()
         x = [row["global_iteration"] for row in convergence_rows]
-        if any(math.isfinite(row.get("rms_ct_s", math.nan)) for row in convergence_rows):
+        if any(math.isfinite(row.get("initial_weighted_ct_rms_s", math.nan)) for row in convergence_rows):
+            plt.plot(
+                x,
+                [row.get("initial_weighted_ct_rms_s", math.nan) for row in convergence_rows],
+                label="Initial RMSCT",
+            )
+        if any(math.isfinite(row.get("post_weighted_ct_rms_s", math.nan)) for row in convergence_rows):
+            plt.plot(
+                x,
+                [row.get("post_weighted_ct_rms_s", math.nan) for row in convergence_rows],
+                label="Post-solve RMSCT",
+            )
+        elif any(math.isfinite(row.get("rms_ct_s", math.nan)) for row in convergence_rows):
             plt.plot(x, [row.get("rms_ct_s", math.nan) for row in convergence_rows], label="RMSCT")
-        if any(math.isfinite(row.get("rms_cc_s", math.nan)) for row in convergence_rows):
+        if any(math.isfinite(row.get("initial_weighted_cc_rms_s", math.nan)) for row in convergence_rows):
+            plt.plot(
+                x,
+                [row.get("initial_weighted_cc_rms_s", math.nan) for row in convergence_rows],
+                label="Initial RMSCC",
+            )
+        if any(math.isfinite(row.get("post_weighted_cc_rms_s", math.nan)) for row in convergence_rows):
+            plt.plot(
+                x,
+                [row.get("post_weighted_cc_rms_s", math.nan) for row in convergence_rows],
+                label="Post-solve RMSCC",
+            )
+        elif any(math.isfinite(row.get("rms_cc_s", math.nan)) for row in convergence_rows):
             plt.plot(x, [row.get("rms_cc_s", math.nan) for row in convergence_rows], label="RMSCC")
         plt.xlabel("iteration")
         plt.ylabel("weighted RMS (s)")
@@ -1251,8 +1358,12 @@ def create_quality_report(
             "relocated",
         )
     model_dd_rows = model_dd_original + model_dd_relocated
+    comparison_dd_original, comparison_dd_relocated = (
+        paired_double_difference_rows(model_dd_original, model_dd_relocated)
+    )
+    comparison_dd_rows = comparison_dd_original + comparison_dd_relocated
     event_pick_rows = event_pick_residual_summary_rows(pick_rows)
-    event_dd_rows = event_double_difference_summary_rows(model_dd_rows)
+    event_dd_rows = event_double_difference_summary_rows(comparison_dd_rows)
     event_residual_rows = combined_event_residual_summary_rows(
         event_pick_rows,
         event_dd_rows,
@@ -1273,10 +1384,10 @@ def create_quality_report(
             row["absolute_residual_s"] for row in pick_relocated
         ],
         "model_dd_abs_residual_original_s": [
-            row["absolute_residual_s"] for row in model_dd_original
+            row["absolute_residual_s"] for row in comparison_dd_original
         ],
         "model_dd_abs_residual_relocated_s": [
-            row["absolute_residual_s"] for row in model_dd_relocated
+            row["absolute_residual_s"] for row in comparison_dd_relocated
         ],
         "event_pick_mean_abs_original_s": [
             row["original_pick_mean_abs_s"]
@@ -1319,6 +1430,9 @@ def create_quality_report(
         "model_dd_abs_residual_relocated_s": raw[
             "model_dd_abs_residual_relocated_s"
         ],
+        "model_dd_original_all_count": [float(len(model_dd_original))],
+        "model_dd_relocated_all_count": [float(len(model_dd_relocated))],
+        "model_dd_common_count": [float(len(comparison_dd_original))],
     }
     for metric, values in summary_items.items():
         row = {"metric": metric}
@@ -1340,6 +1454,10 @@ def create_quality_report(
     _write_rows(output_dir / "double_difference_residuals.csv", residual_rows)
     _write_rows(
         output_dir / "model_double_difference_residuals.csv", model_dd_rows
+    )
+    _write_rows(
+        output_dir / "model_double_difference_residuals_common.csv",
+        comparison_dd_rows,
     )
     _write_rows(output_dir / "event_pick_residual_summary.csv", event_pick_rows)
     _write_rows(

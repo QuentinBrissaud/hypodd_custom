@@ -12,3 +12,6 @@ count,max,mean,median,metric,min,p05,p95,rms
 0,nan,nan,nan,pick_abs_residual_relocated_s,nan,nan,nan,nan
 0,nan,nan,nan,model_dd_abs_residual_original_s,nan,nan,nan,nan
 0,nan,nan,nan,model_dd_abs_residual_relocated_s,nan,nan,nan,nan
+1,0.0,0.0,0.0,model_dd_original_all_count,0.0,0.0,0.0,0.0
+1,0.0,0.0,0.0,model_dd_relocated_all_count,0.0,0.0,0.0,0.0
+1,0.0,0.0,0.0,model_dd_common_count,0.0,0.0,0.0,0.0
