@@ -112,7 +112,9 @@ To run with catalog arrival-time differential data only, disable waveform
 cross-correlation:
 
 ```python
-relocator = HypoDDRelocator(..., use_cross_correlation=False)
+relocator = HypoDDRelocator(
+    working_dir="relocator_working_dir",
+    use_cross_correlation=False)
 ```
 
 To fix event depth in HypoDD, pass an `event_fix` value. For a near-surface
@@ -120,7 +122,7 @@ fixed-depth run, use HypoDD's safe shallow depth of 0.01 km:
 
 ```python
 relocator = HypoDDRelocator(
-    ...,
+    working_dir="relocator_working_dir",
     use_cross_correlation=False,
     event_fix=1,
     fixed_depth_km=0.01)

@@ -39,14 +39,14 @@ class HypoDDRelocator(object):
     def __init__(
         self,
         working_dir,
-        cc_time_before,
-        cc_time_after,
-        cc_maxlag,
-        cc_filter_min_freq,
-        cc_filter_max_freq,
-        cc_p_phase_weighting,
-        cc_s_phase_weighting,
-        cc_min_allowed_cross_corr_coeff,
+        cc_time_before=0.05,
+        cc_time_after=0.2,
+        cc_maxlag=0.1,
+        cc_filter_min_freq=1.0,
+        cc_filter_max_freq=20.0,
+        cc_p_phase_weighting=None,
+        cc_s_phase_weighting=None,
+        cc_min_allowed_cross_corr_coeff=0.4,
         supress_warning_traces=False,
         shift_stations=False,
         use_cross_correlation=True,
@@ -57,30 +57,33 @@ class HypoDDRelocator(object):
         :param working_dir: The working directory where all temporary and final
             files will be placed.
         :param cc_time_before: Time to start cross correlation before pick time
-            in seconds.
+            in seconds. Defaults to 0.05.
         :param cc_time_after: Time to start cross correlation after pick time
-            in seconds.
+            in seconds. Defaults to 0.2.
         :param cc_maxlag: Maximum lag time tested during cross correlation.
+            Defaults to 0.1.
         :param cc_filter_min_freq: Lower corner frequency for the Butterworth
             bandpass filter to be applied during cross correlation.
+            Defaults to 1.0.
         :param cc_filter_max_freq: Upper corner frequency for the Butterworth
             bandpass filter to be applied during cross correlation.
+            Defaults to 20.0.
         :param cc_p_phase_weighting: The cross correlation travel time
             differences can be calculated on several channels. This dict
             specified which channels to calculate it for and how to weight the
             channels to determine the final cross correlated traveltime between
             two events. This assumes the waveform data adheres to the SEED
             naming convention.
-            This dict applies to all P phase picks.
+            This dict applies to all P phase picks. Defaults to {"Z": 1.0}.
             Examples:
                 {"Z": 1.0} - Only use the vertical channel.
                 {"E": 1.0, "N": 1.0} - Use east and north channel and weight
                                        them equally.
         :param cc_s_phase_weighting: See cc_p_phase_weighting. Just for S
-            phases.
+            phases. Defaults to {"Z": 1.0, "E": 1.0, "N": 1.0}.
         :param cc_min_allowed_cross_corr_coeff: The minimum allowed
             cross-correlation coefficient for a differential travel time to be
-            accepted.
+            accepted. Defaults to 0.4.
         :param supress_warning_traces: Supress warning about traces not being
             found (useful if you mix stations with different types of
             component codes (ZNE versus 123, for example))
@@ -106,6 +109,10 @@ class HypoDDRelocator(object):
             msg = "cc_filter_min_freq has to smaller then cc_filter_max_freq."
             raise HypoDDException(msg)
         # Fill the phase weighting dict if necessary.
+        if cc_p_phase_weighting is None:
+            cc_p_phase_weighting = {"Z": 1.0}
+        if cc_s_phase_weighting is None:
+            cc_s_phase_weighting = {"Z": 1.0, "E": 1.0, "N": 1.0}
         cc_p_phase_weighting = copy.copy(cc_p_phase_weighting)
         cc_s_phase_weighting = copy.copy(cc_s_phase_weighting)
         for phase in ["Z", "E", "N"]:
