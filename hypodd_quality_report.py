@@ -574,7 +574,7 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
     return plot_paths
 
 
-def make_ukraine_cartopy_plot(output_dir, original, relocated):
+def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
     """
     Plot original and relocated epicenters on a Ukraine map with Cartopy.
 
@@ -616,6 +616,27 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated):
         ("Relocated Events", relocated, "tab:red"),
     ]
 
+    all_lats = (
+        [event["latitude"] for event in original.values()]
+        + [event["latitude"] for event in relocated.values()]
+        + [station["latitude"] for station in stations.values()]
+    )
+    all_lons = (
+        [event["longitude"] for event in original.values()]
+        + [event["longitude"] for event in relocated.values()]
+        + [station["longitude"] for station in stations.values()]
+    )
+    if not all_lats or not all_lons:
+        return []
+    lat_pad = max(0.25, (max(all_lats) - min(all_lats)) * 0.12)
+    lon_pad = max(0.25, (max(all_lons) - min(all_lons)) * 0.12)
+    extent = [
+        min(all_lons) - lon_pad,
+        max(all_lons) + lon_pad,
+        min(all_lats) - lat_pad,
+        max(all_lats) + lat_pad,
+    ]
+
     try:
         projection = ccrs.PlateCarree()
         fig, axes = plt.subplots(
@@ -625,7 +646,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated):
             subplot_kw={"projection": projection},
         )
         for ax, (title, events, color) in zip(axes, datasets):
-            ax.set_extent([21.0, 41.5, 44.0, 53.0], crs=projection)
+            ax.set_extent(extent, crs=projection)
             ax.add_feature(cfeature.LAND, facecolor="0.96")
             ax.add_feature(cfeature.OCEAN, facecolor="0.90")
             ax.add_feature(cfeature.BORDERS, linewidth=0.8)
@@ -654,8 +675,25 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated):
                 transform=projection,
                 label=title,
             )
+            ax.scatter(
+                [station["longitude"] for station in stations.values()],
+                [station["latitude"] for station in stations.values()],
+                s=34,
+                marker="^",
+                c="black",
+                edgecolors="white",
+                linewidths=0.4,
+                transform=projection,
+                label="Stations",
+                zorder=4,
+            )
 
             for city, lat, lon in cities:
+                if not (
+                    extent[0] <= lon <= extent[1]
+                    and extent[2] <= lat <= extent[3]
+                ):
+                    continue
                 ax.plot(lon, lat, marker="o", markersize=2.5, color="black")
                 ax.text(
                     lon + 0.12,
@@ -675,6 +713,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated):
             gl.top_labels = False
             gl.right_labels = False
             ax.set_title("%s (%i)" % (title, len(events)))
+            ax.legend(loc="lower left", fontsize=8)
 
         plt.tight_layout()
         plt.savefig(path, dpi=180)
@@ -785,7 +824,7 @@ def create_quality_report(
             convergence_rows,
         )
         plot_paths.extend(
-            make_ukraine_cartopy_plot(output_dir, original, relocated)
+            make_ukraine_cartopy_plot(output_dir, original, relocated, stations)
         )
 
     return {
