@@ -22,6 +22,29 @@ def _float(value):
         return math.nan
 
 
+def _hypodd_log_float(value):
+    """
+    Parse numeric fields from HypoDD logs.
+
+    HypoDD sometimes emits fixed-width overflow fields with asterisks, e.g.
+    0*****. Keep a clean leading numeric prefix if present; otherwise NaN.
+    """
+    try:
+        return float(value)
+    except ValueError:
+        match = re.match(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)", value)
+        if match:
+            return float(match.group(0))
+        return math.nan
+
+
+def _hypodd_log_int(value):
+    parsed = _hypodd_log_float(value)
+    if not math.isfinite(parsed):
+        return ""
+    return int(parsed)
+
+
 def _percentile(values, percentile):
     values = sorted(v for v in values if math.isfinite(v))
     if not values:
@@ -414,43 +437,43 @@ def parse_hypodd_log(path):
                     row.update(
                         {
                             "events": int(parts[1]),
-                            "ct_percent": float(parts[2]),
-                            "cc_percent": float(parts[3]),
-                            "rms_ct_percent": float(parts[4]),
-                            "rms_ct_ms": float(parts[5]),
-                            "rms_cc_percent": float(parts[6]),
-                            "rms_cc_ms": float(parts[7]),
-                            "rms_station_percent": float(parts[8]),
-                            "rms_station_ms": float(parts[9]),
-                            "mean_abs_dx_m": float(parts[10]),
-                            "mean_abs_dy_m": float(parts[11]),
-                            "mean_abs_dz_m": float(parts[12]),
-                            "mean_abs_dt_ms": float(parts[13]),
-                            "origin_shift_m": float(parts[14]),
-                            "airquake_count": int(float(parts[15])),
+                            "ct_percent": _hypodd_log_float(parts[2]),
+                            "cc_percent": _hypodd_log_float(parts[3]),
+                            "rms_ct_percent": _hypodd_log_float(parts[4]),
+                            "rms_ct_ms": _hypodd_log_float(parts[5]),
+                            "rms_cc_percent": _hypodd_log_float(parts[6]),
+                            "rms_cc_ms": _hypodd_log_float(parts[7]),
+                            "rms_station_percent": _hypodd_log_float(parts[8]),
+                            "rms_station_ms": _hypodd_log_float(parts[9]),
+                            "mean_abs_dx_m": _hypodd_log_float(parts[10]),
+                            "mean_abs_dy_m": _hypodd_log_float(parts[11]),
+                            "mean_abs_dz_m": _hypodd_log_float(parts[12]),
+                            "mean_abs_dt_ms": _hypodd_log_float(parts[13]),
+                            "origin_shift_m": _hypodd_log_float(parts[14]),
+                            "airquake_count": _hypodd_log_int(parts[15]),
                         }
                     )
                     if len(parts) > 16:
-                        row["condition_number"] = float(parts[16])
+                        row["condition_number"] = _hypodd_log_float(parts[16])
                 elif len(parts) >= 13:
                     row.update(
                         {
                             "events": int(parts[1]),
-                            "ct_percent": float(parts[2]),
-                            "rms_ct_percent": float(parts[3]),
-                            "rms_ct_ms": float(parts[4]),
-                            "rms_station_percent": float(parts[5]),
-                            "rms_station_ms": float(parts[6]),
-                            "mean_abs_dx_m": float(parts[7]),
-                            "mean_abs_dy_m": float(parts[8]),
-                            "mean_abs_dz_m": float(parts[9]),
-                            "mean_abs_dt_ms": float(parts[10]),
-                            "origin_shift_m": float(parts[11]),
-                            "airquake_count": int(float(parts[12])),
+                            "ct_percent": _hypodd_log_float(parts[2]),
+                            "rms_ct_percent": _hypodd_log_float(parts[3]),
+                            "rms_ct_ms": _hypodd_log_float(parts[4]),
+                            "rms_station_percent": _hypodd_log_float(parts[5]),
+                            "rms_station_ms": _hypodd_log_float(parts[6]),
+                            "mean_abs_dx_m": _hypodd_log_float(parts[7]),
+                            "mean_abs_dy_m": _hypodd_log_float(parts[8]),
+                            "mean_abs_dz_m": _hypodd_log_float(parts[9]),
+                            "mean_abs_dt_ms": _hypodd_log_float(parts[10]),
+                            "origin_shift_m": _hypodd_log_float(parts[11]),
+                            "airquake_count": _hypodd_log_int(parts[12]),
                         }
                     )
                     if len(parts) > 13:
-                        row["condition_number"] = float(parts[13])
+                        row["condition_number"] = _hypodd_log_float(parts[13])
                 rows.append(row)
                 current = None
     return rows
