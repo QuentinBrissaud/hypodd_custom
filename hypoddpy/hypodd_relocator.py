@@ -166,6 +166,7 @@ class HypoDDRelocator(object):
 
         # Dictionary to store forced configuration values.
         self.forced_configuration_values = {}
+        self.compiler_configuration_values = {}
 
         # Configure the paths.
         self._configure_paths()
@@ -363,6 +364,12 @@ class HypoDDRelocator(object):
             if "fixed_depth_km" in section:
                 value = section.get("fixed_depth_km")
                 self.fixed_depth_km = None if value == "" else float(value)
+
+        if parser.has_section("compiler"):
+            for key, value in parser.items("compiler"):
+                self.compiler_configuration_values[key.upper()] = int(
+                    value.strip()
+                )
 
         for section_name in ["ph2dt", "hypodd"]:
             if not parser.has_section(section_name):
@@ -925,15 +932,17 @@ class HypoDDRelocator(object):
             compiler = HypoDDCompiler(
                 working_dir=self.working_dir, log_function=logfunc
             )
-            compiler.configure(
-                MAXEVE=len(self.events) + 30,
+            compiler_config = {
+                "MAXEVE": len(self.events) + 30,
                 # MAXEVE0=len(self.events) + 30,
-                MAXEVE0=200,
-                MAXDATA=3000000,
-                MAXDATA0=60000,
-                MAXCL=20,
-                MAXSTA=len(self.stations) + 10,
-            )
+                "MAXEVE0": 200,
+                "MAXDATA": 3000000,
+                "MAXDATA0": 60000,
+                "MAXCL": 20,
+                "MAXSTA": len(self.stations) + 10,
+            }
+            compiler_config.update(self.compiler_configuration_values)
+            compiler.configure(**compiler_config)
             compiler.make()
 
     def _run_hypodd(self):
