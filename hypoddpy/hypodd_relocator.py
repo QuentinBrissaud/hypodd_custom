@@ -1,4 +1,5 @@
 import copy
+import configparser
 import fnmatch
 import glob
 import json
@@ -292,17 +293,109 @@ class HypoDDRelocator(object):
             "MINLNK",
             "MINOBS",
             "MAXOBS",
+            "IPHA",
+            "OBSCC",
+            "OBSCT",
+            "MINDS",
+            "MAXDS",
+            "MAXGAP",
+            "ISTART",
+            "ISOLV",
+            "IAQ",
+            "CID",
+            "ID",
+            "DATA_WEIGHTING_AND_REWEIGHTING",
+            "ITERATIONS",
         ]
         if not isinstance(key, str):
             msg = "The configuration key needs to be a string"
             warnings.warn(msg)
             return
+        key = key.upper()
         if key not in allowed_keys:
             msg = "Key {key} is not an allowed key an will ignored. "
             msg += "Allowed keys:\n{all_keys}"
             warnings.warn(msg.format(key=key, all_keys=allowed_keys))
             return
         self.forced_configuration_values[key] = value
+
+    def load_configuration_file(self, filename):
+        """
+        Load ph2dt/hypoDD wrapper settings from an INI-style config file.
+
+        Supported sections:
+            [relocator]
+                use_cross_correlation, event_fix, fixed_depth_km
+
+            [ph2dt]
+                MINWGHT, MAXDIST, MAXSEP, MAXNGH, MINLNK, MINOBS, MAXOBS
+
+            [hypodd]
+                IPHA, OBSCC, OBSCT, MINDS, MAXDS, MAXGAP, ISTART, ISOLV,
+                IAQ, CID, ID, ITERATIONS
+
+        ITERATIONS may be a multiline value; each non-empty line is written as
+        one HypoDD data-weighting row.
+        """
+        parser = configparser.ConfigParser()
+        parser.optionxform = str
+        read_files = parser.read(filename)
+        if not read_files:
+            msg = "Configuration file could not be read: %s" % filename
+            raise HypoDDException(msg)
+
+        if parser.has_section("relocator"):
+            section = parser["relocator"]
+            if "use_cross_correlation" in section:
+                self.use_cross_correlation = section.getboolean(
+                    "use_cross_correlation"
+                )
+            if "event_fix" in section:
+                value = section.get("event_fix")
+                self.event_fix = None if value == "" else int(value)
+            if "fixed_depth_km" in section:
+                value = section.get("fixed_depth_km")
+                self.fixed_depth_km = None if value == "" else float(value)
+
+        for section_name in ["ph2dt", "hypodd"]:
+            if not parser.has_section(section_name):
+                continue
+            for key, value in parser.items(section_name):
+                self.set_forced_configuration_value(
+                    key, self._parse_configuration_value(key, value)
+                )
+        self.log("Loaded configuration file: %s" % filename)
+
+    def _parse_configuration_value(self, key, value):
+        """
+        Parse a config value into an int, float, string, or list of strings.
+        """
+        key = key.upper()
+        value = value.strip()
+        if key in ["ITERATIONS", "DATA_WEIGHTING_AND_REWEIGHTING"]:
+            return [
+                line.strip()
+                for line in value.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        if key == "ID":
+            return value
+        int_keys = [
+            "MAXNGH",
+            "MINLNK",
+            "MINOBS",
+            "MAXOBS",
+            "IPHA",
+            "OBSCC",
+            "OBSCT",
+            "ISTART",
+            "ISOLV",
+            "IAQ",
+            "CID",
+        ]
+        if key in int_keys:
+            return int(value)
+        return float(value)
 
     def _configure_paths(self):
         """
@@ -1550,7 +1643,6 @@ class HypoDDRelocator(object):
         # Determine all the values.
         values = {}
         values["IDAT"] = 3 if self.use_cross_correlation else 2
-        # IPHA also
         values["IPHA"] = 3
         # Max distance between centroid of event cluster and stations.
         values["DIST"] = self.forced_configuration_values["MAXDIST"]
@@ -1582,6 +1674,25 @@ class HypoDDRelocator(object):
             iterations = [
                 "100 0 0 -999 -999 0.1 0.05 6 -999 30",
             ]
+        for key in [
+            "IPHA",
+            "OBSCC",
+            "OBSCT",
+            "MINDS",
+            "MAXDS",
+            "MAXGAP",
+            "ISTART",
+            "ISOLV",
+            "IAQ",
+        ]:
+            if key in self.forced_configuration_values:
+                values[key] = self.forced_configuration_values[key]
+        if "ITERATIONS" in self.forced_configuration_values:
+            iterations = self.forced_configuration_values["ITERATIONS"]
+        elif "DATA_WEIGHTING_AND_REWEIGHTING" in self.forced_configuration_values:
+            iterations = self.forced_configuration_values[
+                "DATA_WEIGHTING_AND_REWEIGHTING"
+            ]
         values["NSET"] = len(iterations)
         values["DATA_WEIGHTING_AND_REWEIGHTING"] = "\n".join(iterations)
         values["FORWARD_MODEL"] = self._get_forward_model_string()
@@ -1589,6 +1700,10 @@ class HypoDDRelocator(object):
         values["CID"] = 0
         # Also of all events.
         values["ID"] = ""
+        if "CID" in self.forced_configuration_values:
+            values["CID"] = self.forced_configuration_values["CID"]
+        if "ID" in self.forced_configuration_values:
+            values["ID"] = self.forced_configuration_values["ID"]
         hypodd_inp = hypodd_inp.format(**values)
         with open(hypodd_inp_path, "w") as open_file:
             open_file.write(hypodd_inp)

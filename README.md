@@ -125,3 +125,16 @@ relocator = HypoDDRelocator(
     event_fix=1,
     fixed_depth_km=0.01)
 ```
+
+ph2dt and hypoDD parameters can also be loaded from an INI file readable by
+Python's `configparser`:
+
+```python
+relocator = HypoDDRelocator(...)
+relocator.load_configuration_file("example_hypodd_config.ini")
+```
+
+Useful clustering controls are in the `[ph2dt]` section (`MAXSEP`, `MAXNGH`,
+`MINLNK`, `MINOBS`, `MAXOBS`) and the `[hypodd]` section (`OBSCC`, `OBSCT`).
+When changing these values, remove old generated files in the working
+directory so `ph2dt.inp`, `dt.ct`, `event.sel`, and `hypoDD.inp` are rebuilt.
