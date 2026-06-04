@@ -574,6 +574,118 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
     return plot_paths
 
 
+def make_ukraine_cartopy_plot(output_dir, original, relocated):
+    """
+    Plot original and relocated epicenters on a Ukraine map with Cartopy.
+
+    The function is optional: if Cartopy or Natural Earth data are unavailable,
+    it returns an empty list instead of failing the report.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+    except ImportError:
+        return []
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "ukraine_original_vs_relocated_map.png"
+
+    cities = [
+        ("Kyiv", 50.4501, 30.5234),
+        ("Kharkiv", 49.9935, 36.2304),
+        ("Odesa", 46.4825, 30.7233),
+        ("Dnipro", 48.4647, 35.0462),
+        ("Donetsk", 48.0159, 37.8028),
+        ("Lviv", 49.8397, 24.0297),
+        ("Zaporizhzhia", 47.8388, 35.1396),
+        ("Kryvyi Rih", 47.9105, 33.3918),
+        ("Mykolaiv", 46.9750, 31.9946),
+        ("Mariupol", 47.0971, 37.5434),
+        ("Luhansk", 48.5740, 39.3078),
+        ("Vinnytsia", 49.2331, 28.4682),
+        ("Chernihiv", 51.4982, 31.2893),
+        ("Poltava", 49.5883, 34.5514),
+        ("Sumy", 50.9077, 34.7981),
+        ("Kherson", 46.6354, 32.6169),
+    ]
+
+    datasets = [
+        ("Original Events", original, "tab:blue"),
+        ("Relocated Events", relocated, "tab:red"),
+    ]
+
+    try:
+        projection = ccrs.PlateCarree()
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(14, 7),
+            subplot_kw={"projection": projection},
+        )
+        for ax, (title, events, color) in zip(axes, datasets):
+            ax.set_extent([21.0, 41.5, 44.0, 53.0], crs=projection)
+            ax.add_feature(cfeature.LAND, facecolor="0.96")
+            ax.add_feature(cfeature.OCEAN, facecolor="0.90")
+            ax.add_feature(cfeature.BORDERS, linewidth=0.8)
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+            ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45")
+            ax.add_feature(
+                cfeature.NaturalEarthFeature(
+                    "cultural",
+                    "admin_0_countries",
+                    "10m",
+                    facecolor="none",
+                    edgecolor="black",
+                ),
+                linewidth=0.8,
+            )
+
+            longitudes = [event["longitude"] for event in events.values()]
+            latitudes = [event["latitude"] for event in events.values()]
+            ax.scatter(
+                longitudes,
+                latitudes,
+                s=8,
+                c=color,
+                alpha=0.55,
+                linewidths=0,
+                transform=projection,
+                label=title,
+            )
+
+            for city, lat, lon in cities:
+                ax.plot(lon, lat, marker="o", markersize=2.5, color="black")
+                ax.text(
+                    lon + 0.12,
+                    lat + 0.08,
+                    city,
+                    fontsize=7,
+                    transform=projection,
+                )
+
+            gl = ax.gridlines(
+                draw_labels=True,
+                linewidth=0.3,
+                color="0.5",
+                alpha=0.5,
+                linestyle="--",
+            )
+            gl.top_labels = False
+            gl.right_labels = False
+            ax.set_title("%s (%i)" % (title, len(events)))
+
+        plt.tight_layout()
+        plt.savefig(path, dpi=180)
+        plt.close(fig)
+    except Exception:
+        plt.close("all")
+        return []
+
+    return [str(path)]
+
+
 def create_quality_report(
     working_dir,
     velocity_model_csv,
@@ -671,6 +783,9 @@ def create_quality_report(
             {"_raw": raw},
             residual_rows,
             convergence_rows,
+        )
+        plot_paths.extend(
+            make_ukraine_cartopy_plot(output_dir, original, relocated)
         )
 
     return {
