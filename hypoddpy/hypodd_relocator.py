@@ -957,6 +957,10 @@ class HypoDDRelocator(object):
             "hypoDD.sta",
             "hypoDD.res",
             "hypoDD.src",
+            "hypoDD.initial.res",
+            "hypoDD.final.res",
+            "hypoDD.initial.tt",
+            "hypoDD.final.tt",
         ]
         files_exists = True
         for o_file in output_files:

@@ -35,6 +35,7 @@ HYPODD_MD5_HASHES = [
     "ac7fb5829abef23aa91f1f8a115e2b45",
     "94228305b2370c4f3371fc6cb76f92c5",
 ]
+HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v2"
 
 
 class HypoDDCompilationError(Exception):
@@ -108,6 +109,9 @@ class HypoDDCompiler(object):
         # the run, the currently used hypoDD.inc file will be copied there.
         self.paths["old hypoDD.inc file"] = os.path.join(
             self.paths["binary_dir"], "hypoDD.inc"
+        )
+        self.paths["diagnostic_patch_stamp"] = os.path.join(
+            self.paths["binary_dir"], "hypoDD_diagnostic_patch.txt"
         )
         # Where to unpack the archive.
         self.paths["hypodd_unpack_dir"] = os.path.join(
@@ -229,7 +233,188 @@ class HypoDDCompiler(object):
         tar = tarfile.open(HYPODD_ARCHIVE, "r:gz")
         tar.extractall(unpack_dir)
         self._set_source_paths(self._find_unpacked_source_root())
+        self._patch_unpacked_hypodd_sources()
         self.log("Unpacking HypoDD archive done.")
+
+    def _patch_unpacked_hypodd_sources(self):
+        """
+        Add diagnostic double-difference residual output to HypoDD.
+        """
+        source_dir = os.path.join(self.paths["make_directory"], "hypoDD")
+        dtres_path = os.path.join(source_dir, "dtres.f")
+        hypodd_path = os.path.join(source_dir, "hypoDD.f")
+
+        with open(dtres_path, "r") as open_file:
+            dtres_source = open_file.read()
+        if "subroutine write_ddres" not in dtres_source:
+            dtres_source += """
+
+      subroutine write_ddres(fn, ndt, dt_sta, dt_dt, dt_c1, dt_c2,
+     & dt_idx, dt_qual, dt_cal, dt_res, dt_wt, dt_offs)
+
+      implicit none
+
+      include'hypoDD.inc'
+
+      character*(*) fn
+      integer ndt
+      character dt_sta(MAXDATA)*7
+      real dt_dt(MAXDATA)
+      integer dt_c1(MAXDATA)
+      integer dt_c2(MAXDATA)
+      integer dt_idx(MAXDATA)
+      real dt_qual(MAXDATA)
+      real dt_cal(MAXDATA)
+      real dt_res(MAXDATA)
+      real dt_wt(MAXDATA)
+      real dt_offs(MAXDATA)
+
+      integer i
+      integer iunit
+
+      call freeunit(iunit)
+      open(iunit,file=fn,status='unknown')
+      write(iunit,'(a)')
+     &'# STA OBS_S CALC_S RES_S C1 C2 IDX QUAL WT OFFS'
+      write(iunit,'(a7,1x,f12.7,1x,f12.7,1x,f12.7,1x,
+     & i9,1x,i9,1x,i1,1x,f9.4,1x,f11.6,1x,f8.1)')
+     & (dt_sta(i),dt_dt(i),dt_cal(i),dt_res(i),dt_c1(i),dt_c2(i),
+     & dt_idx(i),dt_qual(i),dt_wt(i),dt_offs(i),i=1,ndt)
+      close(iunit)
+
+      end
+
+      subroutine write_ttimes(fn, nsrc, src_cusp, nsta, sta_lab,
+     & tmp_ttp, tmp_tts)
+
+      implicit none
+
+      include'hypoDD.inc'
+
+      character*(*) fn
+      integer nsrc
+      integer src_cusp(MAXEVE)
+      integer nsta
+      character sta_lab(MAXSTA)*7
+      real tmp_ttp(MAXSTA,MAXEVE)
+      real tmp_tts(MAXSTA,MAXEVE)
+
+      integer i
+      integer j
+      integer iunit
+
+      call freeunit(iunit)
+      open(iunit,file=fn,status='unknown')
+      write(iunit,'(a)')'# CUSP STA TTP_S TTS_S'
+      do j=1,nsrc
+         write(iunit,'(i9,1x,a7,1x,f12.7,1x,f12.7)')
+     &   (src_cusp(j),sta_lab(i),tmp_ttp(i,j),tmp_tts(i,j),i=1,nsta)
+      enddo
+      close(iunit)
+
+      end
+"""
+            with open(dtres_path, "w") as open_file:
+                open_file.write(dtres_source)
+
+        with open(hypodd_path, "r") as open_file:
+            hypodd_source = open_file.read()
+        if "hypoDD.initial.res" not in hypodd_source:
+            initial_marker = (
+                "       call resstat(log,idata,ndt,nev,dt_res,dt_wt,dt_idx,\n"
+                "     & rms_cc,rms_ct,rms_cc0,rms_ct0,\n"
+                "     & rms_ccold,rms_ctold,rms_cc0old,rms_ct0old,\n"
+                "     &              resvar1)\n"
+                "      endif"
+            )
+            initial_patch = (
+                "       call resstat(log,idata,ndt,nev,dt_res,dt_wt,dt_idx,\n"
+                "     & rms_cc,rms_ct,rms_cc0,rms_ct0,\n"
+                "     & rms_ccold,rms_ctold,rms_cc0old,rms_ct0old,\n"
+                "     &              resvar1)\n"
+                "       call write_ddres('hypoDD.initial.res',ndt,dt_sta,dt_dt,\n"
+                "     & dt_c1,dt_c2,dt_idx,dt_qual,dt_cal,dt_res,dt_wt,dt_offs)\n"
+                "       call write_ttimes('hypoDD.initial.tt',nsrc,src_cusp,nsta,\n"
+                "     & sta_lab,tmp_ttp,tmp_tts)\n"
+                "      endif"
+            )
+            if initial_marker not in hypodd_source:
+                msg = "Could not patch initial HypoDD residual diagnostics."
+                raise HypoDDCompilationError(msg)
+            hypodd_source = hypodd_source.replace(
+                initial_marker, initial_patch, 1
+            )
+
+        if "hypoDD.final.res" not in hypodd_source:
+            final_marker = (
+                "c--- update origin time (this is only done for final output!!)\n"
+                "600   continue\n"
+                "      write(*,'(/,\"writing out results ...\")')"
+            )
+            final_patch = (
+                "c--- update origin time (this is only done for final output!!)\n"
+                "600   continue\n"
+                "      write(*,'(/,\"writing out results ...\")')\n"
+                "\n"
+                "c--- recompute final full-ray residuals for diagnostic output:\n"
+                "      if(imod.eq.0.or.imod.eq.1) then\n"
+                "          call partials(fn_srcpar,\n"
+                "     &     nsrc,src_cusp,src_lat,src_lon,src_dep,\n"
+                "     &     nsta,sta_lab,sta_lat,sta_lon,sta_elv,\n"
+                "     &     mod_nl,mod_ratio,mod_v,mod_top,\n"
+                "     &     tmp_ttp,tmp_tts,\n"
+                "     &     tmp_xp,tmp_yp,tmp_zp,tmp_xs,tmp_ys,tmp_zs)\n"
+                "      elseif(imod.eq.5) then\n"
+                "          call partials_1dsr(fn_srcpar,\n"
+                "     &     nsrc,src_cusp,src_lat,src_lon,src_dep,\n"
+                "     &     nsta,sta_lab,sta_lat,sta_lon,sta_elv,\n"
+                "     &     mod_nl,mod_ratio,mod_v,mod_top,\n"
+                "     &     tmp_ttp,tmp_tts,\n"
+                "     &     tmp_xp,tmp_yp,tmp_zp,tmp_xs,tmp_ys,tmp_zs)\n"
+                "      elseif(imod.eq.4) then\n"
+                "          call partials_1dmm(log,fn_srcpar,fn_mod1d,\n"
+                "     &     nsrc,src_cusp,src_lat,src_lon,src_dep,\n"
+                "     &     nsta,sta_lab,sta_lat,sta_lon,sta_elv,sta_mod,\n"
+                "     &     mod_nl,mod_ratio,mod_v,mod_top,iter,\n"
+                "     &     tmp_ttp,tmp_tts,\n"
+                "     &     tmp_xp,tmp_yp,tmp_zp,tmp_xs,tmp_ys,tmp_zs)\n"
+                "      elseif(imod.eq.9) then\n"
+                "          do i=1,nsta\n"
+                "             do j=1,nsrc\n"
+                "                tmp_ttp(i,j)= -999\n"
+                "             enddo\n"
+                "          enddo\n"
+                "          do k=1,ndt\n"
+                "             do j=1,nsrc\n"
+                "                if(dt_c1(k).eq.src_cusp(j)) tmp_ttp(dt_ista(k),j)= 0\n"
+                "                if(dt_c2(k).eq.src_cusp(j)) tmp_ttp(dt_ista(k),j)= 0\n"
+                "             enddo\n"
+                "          enddo\n"
+                "          call partials_3d(fn_srcpar,\n"
+                "     &     nsrc,src_cusp,src_lat,src_lon,src_dep,\n"
+                "     &     nsta,sta_lab,sta_lat,sta_lon,sta_elv,\n"
+                "     &     mod_nl,mod_ratio,mod_v,mod_top,rot_3d,ipha3d,\n"
+                "     &     tmp_ttp,tmp_tts,\n"
+                "     &     tmp_xp,tmp_yp,tmp_zp,\n"
+                "     &     tmp_xs,tmp_ys,tmp_zs)\n"
+                "      endif\n"
+                "      call dtres(log,ndt,MAXSTA,nsrc,\n"
+                "     & dt_dt,dt_idx,\n"
+                "     & dt_ista,dt_ic1,dt_ic2,\n"
+                "     & src_cusp,src_t,tmp_ttp,tmp_tts,\n"
+                "     & dt_cal,dt_res)\n"
+                "      call write_ddres('hypoDD.final.res',ndt,dt_sta,dt_dt,\n"
+                "     & dt_c1,dt_c2,dt_idx,dt_qual,dt_cal,dt_res,dt_wt,dt_offs)\n"
+                "      call write_ttimes('hypoDD.final.tt',nsrc,src_cusp,nsta,\n"
+                "     & sta_lab,tmp_ttp,tmp_tts)"
+            )
+            if final_marker not in hypodd_source:
+                msg = "Could not patch final HypoDD residual diagnostics."
+                raise HypoDDCompilationError(msg)
+            hypodd_source = hypodd_source.replace(final_marker, final_patch, 1)
+
+        with open(hypodd_path, "w") as open_file:
+            open_file.write(hypodd_source)
 
     def make(self):
         if self.is_configured is not True:
@@ -313,7 +498,12 @@ class HypoDDCompiler(object):
             not os.path.exists(self.paths["hypoDD_binary"])
             or not os.path.exists(self.paths["ph2dt_binary"])
             or not os.path.exists(self.paths["old hypoDD.inc file"])
+            or not os.path.exists(self.paths["diagnostic_patch_stamp"])
         ):
+            return False
+        with open(self.paths["diagnostic_patch_stamp"], "r") as open_file:
+            patch_version = open_file.read().strip()
+        if patch_version != HYPODD_DIAGNOSTIC_PATCH_VERSION:
             return False
         # Check if the newly created hypoDD.inc file is identical to the old
         # one.
@@ -361,4 +551,6 @@ class HypoDDCompiler(object):
         shutil.move(
             self.paths["hypoDD.inc"], self.paths["old hypoDD.inc file"]
         )
+        with open(self.paths["diagnostic_patch_stamp"], "w") as open_file:
+            open_file.write(HYPODD_DIAGNOSTIC_PATCH_VERSION)
         self.log("Compiling HypoDD done.")

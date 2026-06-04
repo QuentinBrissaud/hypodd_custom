@@ -354,24 +354,213 @@ def pick_residual_rows(phase_events, locations, stations, velocity_model, label)
     return rows
 
 
+def read_hypodd_travel_times(path):
+    """
+    Read patched HypoDD source-station P/S travel-time diagnostics.
+    """
+    travel_times = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as open_file:
+        for line in open_file:
+            parts = line.split()
+            if not parts or parts[0].startswith("#"):
+                continue
+            if len(parts) < 4:
+                continue
+            event_id = int(parts[0])
+            station_id = parts[1]
+            travel_times[(event_id, station_id, "P")] = float(parts[2])
+            travel_times[(event_id, station_id, "S")] = float(parts[3])
+    return travel_times
+
+
+def pick_residual_rows_from_hypodd_travel_times(
+    phase_events,
+    locations,
+    travel_times,
+    label,
+):
+    """
+    Compute absolute pick residuals using HypoDD ray-traced travel times.
+    """
+    rows = []
+    for event_id, event in phase_events.items():
+        if event_id not in locations:
+            continue
+        location = locations[event_id]
+        origin_time_shift = (location["time"] - event["time"]).total_seconds()
+        for pick in event["picks"]:
+            phase = pick["phase"].upper()
+            theoretical = travel_times.get((event_id, pick["station_id"], phase))
+            if theoretical is None:
+                continue
+            observed_relative = pick["travel_time"] - origin_time_shift
+            residual = observed_relative - theoretical
+            rows.append(
+                {
+                    "dataset": label,
+                    "event_id": event_id,
+                    "station_id": pick["station_id"],
+                    "phase": phase,
+                    "observed_s": observed_relative,
+                    "theoretical_s": theoretical,
+                    "residual_s": residual,
+                    "absolute_residual_s": abs(residual),
+                    "source": "hypodd_ray_tracing",
+                }
+            )
+    return rows
+
+
+def read_catalog_differential_times(path):
+    """
+    Read ph2dt/HypoDD catalog differential-time observations from dt.ct.
+    """
+    rows = []
+    event_id_1 = None
+    event_id_2 = None
+    with open(path, "r", encoding="utf-8", errors="replace") as open_file:
+        for line in open_file:
+            parts = line.split()
+            if not parts:
+                continue
+            if parts[0] == "#":
+                if len(parts) >= 3:
+                    event_id_1 = int(parts[1])
+                    event_id_2 = int(parts[2])
+                continue
+            if event_id_1 is None or len(parts) < 5:
+                continue
+            rows.append(
+                {
+                    "event_id_1": event_id_1,
+                    "event_id_2": event_id_2,
+                    "station_id": parts[0],
+                    "observed_1_s": float(parts[1]),
+                    "observed_2_s": float(parts[2]),
+                    "weight": float(parts[3]),
+                    "phase": parts[4].upper(),
+                }
+            )
+    return rows
+
+
+def model_double_difference_residual_rows(
+    differential_rows,
+    phase_events,
+    locations,
+    stations,
+    velocity_model,
+    label,
+):
+    """
+    Recompute catalog double-difference residuals from a simple travel-time model.
+    """
+    rows = []
+    for row in differential_rows:
+        event_1 = locations.get(row["event_id_1"])
+        event_2 = locations.get(row["event_id_2"])
+        phase_event_1 = phase_events.get(row["event_id_1"])
+        phase_event_2 = phase_events.get(row["event_id_2"])
+        station = stations.get(row["station_id"])
+        if (
+            event_1 is None
+            or event_2 is None
+            or phase_event_1 is None
+            or phase_event_2 is None
+            or station is None
+        ):
+            continue
+
+        shift_1 = (event_1["time"] - phase_event_1["time"]).total_seconds()
+        shift_2 = (event_2["time"] - phase_event_2["time"]).total_seconds()
+        observed_difference = (
+            row["observed_1_s"] - shift_1
+        ) - (
+            row["observed_2_s"] - shift_2
+        )
+
+        velocity_1 = velocity_at_depth(velocity_model, event_1["depth_km"], row["phase"])
+        velocity_2 = velocity_at_depth(velocity_model, event_2["depth_km"], row["phase"])
+        theoretical_1 = distance_3d_km(event_1, station) / velocity_1
+        theoretical_2 = distance_3d_km(event_2, station) / velocity_2
+        theoretical_difference = theoretical_1 - theoretical_2
+        residual = observed_difference - theoretical_difference
+        rows.append(
+            {
+                "dataset": label,
+                "event_id_1": row["event_id_1"],
+                "event_id_2": row["event_id_2"],
+                "station_id": row["station_id"],
+                "phase": row["phase"],
+                "weight": row["weight"],
+                "observed_difference_s": observed_difference,
+                "theoretical_difference_s": theoretical_difference,
+                "residual_s": residual,
+                "absolute_residual_s": abs(residual),
+            }
+        )
+    return rows
+
+
 def read_hypodd_residuals(path):
     rows = []
     with open(path, "r", encoding="utf-8", errors="replace") as open_file:
         for line in open_file:
             parts = line.split()
-            if len(parts) < 8:
+            if len(parts) < 9:
                 continue
+            idx = int(parts[4])
             rows.append(
                 {
                     "station_id": parts[0],
-                    "residual_s": float(parts[1]),
+                    "observed_difference_s": float(parts[1]),
+                    "residual_s": float(parts[6]) / 1000.0,
+                    "absolute_residual_s": abs(float(parts[6]) / 1000.0),
                     "event_id_1": int(parts[2]),
                     "event_id_2": int(parts[3]),
-                    "type_index": int(parts[4]),
-                    "weight": float(parts[5]),
-                    "offset_km": float(parts[7]),
-                    "phase": "P" if int(parts[4]) in [1, 3] else "S",
-                    "data_type": "cc" if int(parts[4]) in [1, 2] else "ct",
+                    "type_index": idx,
+                    "quality": float(parts[5]),
+                    "weight": float(parts[7]),
+                    "offset_km": float(parts[8]),
+                    "phase": "P" if idx in [1, 3] else "S",
+                    "data_type": "cc" if idx in [1, 2] else "ct",
+                }
+            )
+    return rows
+
+
+def read_hypodd_diagnostic_residuals(path, label):
+    """
+    Read patched HypoDD diagnostic residual files.
+
+    Columns are seconds for observed, calculated, and residual differential
+    times. These are written directly by HypoDD after its ray tracing.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8", errors="replace") as open_file:
+        for line in open_file:
+            parts = line.split()
+            if not parts or parts[0].startswith("#"):
+                continue
+            if len(parts) < 10:
+                continue
+            idx = int(parts[6])
+            rows.append(
+                {
+                    "dataset": label,
+                    "station_id": parts[0],
+                    "observed_difference_s": float(parts[1]),
+                    "theoretical_difference_s": float(parts[2]),
+                    "residual_s": float(parts[3]),
+                    "absolute_residual_s": abs(float(parts[3])),
+                    "event_id_1": int(parts[4]),
+                    "event_id_2": int(parts[5]),
+                    "type_index": idx,
+                    "phase": "P" if idx in [1, 3] else "S",
+                    "data_type": "cc" if idx in [1, 2] else "ct",
+                    "weight": float(parts[8]),
+                    "offset_km": float(parts[9]),
+                    "source": "hypodd_ray_tracing",
                 }
             )
     return rows
@@ -511,6 +700,18 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
             "Nearest-Neighbor Distances",
             "nearest_original_vs_relocated_km.png",
         ),
+        (
+            "pick_abs_residual_original_s",
+            "pick_abs_residual_relocated_s",
+            "Absolute Pick Residuals From Travel-Time Model",
+            "pick_abs_residual_original_vs_relocated_s.png",
+        ),
+        (
+            "model_dd_abs_residual_original_s",
+            "model_dd_abs_residual_relocated_s",
+            "Absolute Catalog Double-Difference Residuals From Travel-Time Model",
+            "model_dd_abs_residual_original_vs_relocated_s.png",
+        ),
     ]:
         original_values = raw.get(original_key, [])
         relocated_values = raw.get(relocated_key, [])
@@ -531,24 +732,68 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
             label="Relocated",
             density=False,
         )
-        plt.xlabel("km")
+        xlabel = "km" if original_key.endswith("_km") else "seconds"
+        plt.xlabel(xlabel)
         plt.ylabel("count")
         plt.title(title)
         plt.legend()
         save_current(filename)
 
-    for key, title in [
-        ("horizontal_shift_km", "Horizontal Relocation Shifts"),
+    for key, title, xlabel in [
+        ("horizontal_shift_km", "Horizontal Relocation Shifts", "km"),
+        ("time_shift_s", "Origin-Time Relocation Shifts", "seconds"),
+        ("abs_time_shift_s", "Absolute Origin-Time Relocation Shifts", "seconds"),
     ]:
         values = raw.get(key, [])
         if not values:
             continue
         plt.figure()
         plt.hist(values, bins=50)
-        plt.xlabel("km")
+        plt.xlabel(xlabel)
         plt.ylabel("count")
         plt.title(title)
         save_current("%s.png" % key)
+
+    mean_pairs = [
+        (
+            "pick_abs_residual_original_s",
+            "pick_abs_residual_relocated_s",
+            "Absolute pick residual",
+        ),
+        (
+            "model_dd_abs_residual_original_s",
+            "model_dd_abs_residual_relocated_s",
+            "Catalog double-difference residual",
+        ),
+    ]
+    labels = []
+    original_means = []
+    relocated_means = []
+    for original_key, relocated_key, label in mean_pairs:
+        original_values = raw.get(original_key, [])
+        relocated_values = raw.get(relocated_key, [])
+        if not original_values and not relocated_values:
+            continue
+        labels.append(label)
+        original_means.append(
+            sum(original_values) / len(original_values) if original_values else math.nan
+        )
+        relocated_means.append(
+            sum(relocated_values) / len(relocated_values)
+            if relocated_values
+            else math.nan
+        )
+    if labels:
+        x = list(range(len(labels)))
+        width = 0.36
+        plt.figure(figsize=(8, 4.5))
+        plt.bar([item - width / 2 for item in x], original_means, width, label="Original")
+        plt.bar([item + width / 2 for item in x], relocated_means, width, label="Relocated")
+        plt.xticks(x, labels, rotation=15, ha="right")
+        plt.ylabel("mean absolute residual (s)")
+        plt.title("Model-Based Mean Absolute Error")
+        plt.legend()
+        save_current("model_based_mean_absolute_errors.png")
 
     if residual_rows:
         plt.figure()
@@ -591,6 +836,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "ukraine_original_vs_relocated_map.png"
+    relocation_path = output_dir / "ukraine_relocation_vectors_map.png"
 
     cities = [
         ("Kyiv", 50.4501, 30.5234),
@@ -642,6 +888,67 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
         max(all_lats) + lat_pad,
     ]
 
+    def add_base_map(ax, projection):
+        ax.set_extent(extent, crs=projection)
+        ax.add_feature(cfeature.LAND, facecolor="0.96")
+        ax.add_feature(cfeature.OCEAN, facecolor="0.90")
+        ax.add_feature(cfeature.BORDERS, linewidth=0.8)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+        ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45")
+        ax.add_feature(
+            cfeature.NaturalEarthFeature(
+                "cultural",
+                "admin_0_countries",
+                "10m",
+                facecolor="none",
+                edgecolor="black",
+            ),
+            linewidth=0.8,
+        )
+
+    def add_stations(ax, projection):
+        ax.scatter(
+            [station["longitude"] for station in stations.values()],
+            [station["latitude"] for station in stations.values()],
+            s=34,
+            marker="^",
+            c="black",
+            edgecolors="white",
+            linewidths=0.4,
+            transform=projection,
+            label="Stations",
+            zorder=4,
+        )
+
+    def add_cities(ax, projection):
+        for city, lat, lon in cities:
+            if not (
+                extent[0] <= lon <= extent[1]
+                and extent[2] <= lat <= extent[3]
+            ):
+                continue
+            ax.plot(lon, lat, marker="o", markersize=2.5, color="black")
+            ax.text(
+                lon + 0.12,
+                lat + 0.08,
+                city,
+                fontsize=7,
+                transform=projection,
+            )
+
+    def add_grid(ax):
+        gl = ax.gridlines(
+            draw_labels=True,
+            linewidth=0.3,
+            color="0.5",
+            alpha=0.5,
+            linestyle="--",
+        )
+        gl.top_labels = False
+        gl.right_labels = False
+
+    plot_paths = []
+
     try:
         projection = ccrs.PlateCarree()
         fig, axes = plt.subplots(
@@ -651,23 +958,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
             subplot_kw={"projection": projection},
         )
         for ax, (title, events, color) in zip(axes, datasets):
-            ax.set_extent(extent, crs=projection)
-            ax.add_feature(cfeature.LAND, facecolor="0.96")
-            ax.add_feature(cfeature.OCEAN, facecolor="0.90")
-            ax.add_feature(cfeature.BORDERS, linewidth=0.8)
-            ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
-            ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45")
-            ax.add_feature(
-                cfeature.NaturalEarthFeature(
-                    "cultural",
-                    "admin_0_countries",
-                    "10m",
-                    facecolor="none",
-                    edgecolor="black",
-                ),
-                linewidth=0.8,
-            )
-
+            add_base_map(ax, projection)
             longitudes = [event["longitude"] for event in events.values()]
             latitudes = [event["latitude"] for event in events.values()]
             ax.scatter(
@@ -680,54 +971,69 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
                 transform=projection,
                 label=title,
             )
-            ax.scatter(
-                [station["longitude"] for station in stations.values()],
-                [station["latitude"] for station in stations.values()],
-                s=34,
-                marker="^",
-                c="black",
-                edgecolors="white",
-                linewidths=0.4,
-                transform=projection,
-                label="Stations",
-                zorder=4,
-            )
-
-            for city, lat, lon in cities:
-                if not (
-                    extent[0] <= lon <= extent[1]
-                    and extent[2] <= lat <= extent[3]
-                ):
-                    continue
-                ax.plot(lon, lat, marker="o", markersize=2.5, color="black")
-                ax.text(
-                    lon + 0.12,
-                    lat + 0.08,
-                    city,
-                    fontsize=7,
-                    transform=projection,
-                )
-
-            gl = ax.gridlines(
-                draw_labels=True,
-                linewidth=0.3,
-                color="0.5",
-                alpha=0.5,
-                linestyle="--",
-            )
-            gl.top_labels = False
-            gl.right_labels = False
+            add_stations(ax, projection)
+            add_cities(ax, projection)
+            add_grid(ax)
             ax.set_title("%s (%i)" % (title, len(events)))
             ax.legend(loc="lower left", fontsize=8)
 
         plt.tight_layout()
         plt.savefig(path, dpi=180)
         plt.close(fig)
+        plot_paths.append(str(path))
+
+        common_event_ids = sorted(set(original).intersection(relocated))
+        fig = plt.figure(figsize=(9, 8))
+        ax = plt.axes(projection=projection)
+        add_base_map(ax, projection)
+        for event_id in common_event_ids:
+            original_event = original[event_id]
+            relocated_event = relocated[event_id]
+            ax.plot(
+                [original_event["longitude"], relocated_event["longitude"]],
+                [original_event["latitude"], relocated_event["latitude"]],
+                color="0.35",
+                linewidth=0.35,
+                alpha=0.35,
+                transform=projection,
+                zorder=2,
+            )
+        ax.scatter(
+            [original[event_id]["longitude"] for event_id in common_event_ids],
+            [original[event_id]["latitude"] for event_id in common_event_ids],
+            s=8,
+            c="tab:blue",
+            alpha=0.55,
+            linewidths=0,
+            transform=projection,
+            label="Original Events",
+            zorder=3,
+        )
+        ax.scatter(
+            [relocated[event_id]["longitude"] for event_id in common_event_ids],
+            [relocated[event_id]["latitude"] for event_id in common_event_ids],
+            s=8,
+            c="tab:red",
+            alpha=0.55,
+            linewidths=0,
+            transform=projection,
+            label="Relocated Events",
+            zorder=3,
+        )
+        add_stations(ax, projection)
+        add_cities(ax, projection)
+        add_grid(ax)
+        ax.set_title("Event Relocation Vectors (%i matched events)" % len(common_event_ids))
+        ax.legend(loc="lower left", fontsize=8)
+        plt.tight_layout()
+        plt.savefig(relocation_path, dpi=180)
+        plt.close(fig)
+        plot_paths.append(str(relocation_path))
     except Exception:
         plt.close("all")
         return []
 
-    return [str(path)]
+    return plot_paths
 
 
 def create_quality_report(
@@ -751,12 +1057,22 @@ def create_quality_report(
     station_path = input_dir / "station.sel"
     if not station_path.exists():
         station_path = output_files / "hypoDD.sta"
+    dt_ct_path = input_dir / "dt.ct"
+    if not dt_ct_path.exists():
+        dt_ct_path = output_files / "dt.ct"
     phase_events = read_phase_dat(phase_path) if phase_path.exists() else {}
     stations = read_station_dat(station_path)
     velocity_model = read_velocity_model(velocity_model_csv)
+    differential_rows = (
+        read_catalog_differential_times(dt_ct_path) if dt_ct_path.exists() else []
+    )
 
     residual_rows = read_hypodd_residuals(output_files / "hypoDD.res")
     station_rows = read_station_residuals(output_files / "hypoDD.sta")
+    initial_diag_path = output_files / "hypoDD.initial.res"
+    final_diag_path = output_files / "hypoDD.final.res"
+    initial_tt_path = output_files / "hypoDD.initial.tt"
+    final_tt_path = output_files / "hypoDD.final.tt"
     log_path = working_dir / "hypoDD_log.txt"
     if not log_path.exists():
         log_path = output_files / "hypoDD.log"
@@ -766,13 +1082,54 @@ def create_quality_report(
     pick_original = []
     pick_relocated = []
     if phase_events:
-        pick_original = pick_residual_rows(
-            phase_events, original, stations, velocity_model, "original"
-        )
-        pick_relocated = pick_residual_rows(
-            phase_events, relocated, stations, velocity_model, "relocated"
-        )
+        if initial_tt_path.exists() and final_tt_path.exists():
+            pick_original = pick_residual_rows_from_hypodd_travel_times(
+                phase_events,
+                original,
+                read_hypodd_travel_times(initial_tt_path),
+                "original",
+            )
+            pick_relocated = pick_residual_rows_from_hypodd_travel_times(
+                phase_events,
+                relocated,
+                read_hypodd_travel_times(final_tt_path),
+                "relocated",
+            )
+        else:
+            pick_original = pick_residual_rows(
+                phase_events, original, stations, velocity_model, "original"
+            )
+            pick_relocated = pick_residual_rows(
+                phase_events, relocated, stations, velocity_model, "relocated"
+            )
     pick_rows = pick_original + pick_relocated
+    model_dd_original = []
+    model_dd_relocated = []
+    if initial_diag_path.exists() and final_diag_path.exists():
+        model_dd_original = read_hypodd_diagnostic_residuals(
+            initial_diag_path, "original"
+        )
+        model_dd_relocated = read_hypodd_diagnostic_residuals(
+            final_diag_path, "relocated"
+        )
+    elif phase_events and differential_rows:
+        model_dd_original = model_double_difference_residual_rows(
+            differential_rows,
+            phase_events,
+            original,
+            stations,
+            velocity_model,
+            "original",
+        )
+        model_dd_relocated = model_double_difference_residual_rows(
+            differential_rows,
+            phase_events,
+            relocated,
+            stations,
+            velocity_model,
+            "relocated",
+        )
+    model_dd_rows = model_dd_original + model_dd_relocated
 
     raw = {
         "interevent_original_km": inter_event_distances(original),
@@ -780,6 +1137,20 @@ def create_quality_report(
         "nearest_original_km": nearest_neighbor_distances(original),
         "nearest_relocated_km": nearest_neighbor_distances(relocated),
         "horizontal_shift_km": [row["horizontal_shift_km"] for row in shifts],
+        "time_shift_s": [row["time_shift_s"] for row in shifts],
+        "abs_time_shift_s": [abs(row["time_shift_s"]) for row in shifts],
+        "pick_abs_residual_original_s": [
+            row["absolute_residual_s"] for row in pick_original
+        ],
+        "pick_abs_residual_relocated_s": [
+            row["absolute_residual_s"] for row in pick_relocated
+        ],
+        "model_dd_abs_residual_original_s": [
+            row["absolute_residual_s"] for row in model_dd_original
+        ],
+        "model_dd_abs_residual_relocated_s": [
+            row["absolute_residual_s"] for row in model_dd_relocated
+        ],
     }
 
     summary_rows = []
@@ -789,13 +1160,17 @@ def create_quality_report(
         "nearest_original_km": raw["nearest_original_km"],
         "nearest_relocated_km": raw["nearest_relocated_km"],
         "horizontal_shift_km": raw["horizontal_shift_km"],
+        "time_shift_s": raw["time_shift_s"],
+        "abs_time_shift_s": raw["abs_time_shift_s"],
         "dd_residual_s": [row["residual_s"] for row in residual_rows],
         "dd_abs_residual_s": [abs(row["residual_s"]) for row in residual_rows],
-        "pick_abs_residual_original_s": [
-            row["absolute_residual_s"] for row in pick_original
+        "pick_abs_residual_original_s": raw["pick_abs_residual_original_s"],
+        "pick_abs_residual_relocated_s": raw["pick_abs_residual_relocated_s"],
+        "model_dd_abs_residual_original_s": raw[
+            "model_dd_abs_residual_original_s"
         ],
-        "pick_abs_residual_relocated_s": [
-            row["absolute_residual_s"] for row in pick_relocated
+        "model_dd_abs_residual_relocated_s": raw[
+            "model_dd_abs_residual_relocated_s"
         ],
     }
     for metric, values in summary_items.items():
@@ -816,6 +1191,9 @@ def create_quality_report(
     _write_rows(output_dir / "location_shifts.csv", shifts)
     _write_rows(output_dir / "pick_residuals.csv", pick_rows)
     _write_rows(output_dir / "double_difference_residuals.csv", residual_rows)
+    _write_rows(
+        output_dir / "model_double_difference_residuals.csv", model_dd_rows
+    )
     _write_rows(output_dir / "station_residuals.csv", station_rows)
     _write_rows(output_dir / "cluster_sizes.csv", cluster_rows)
     _write_rows(output_dir / "iteration_convergence.csv", convergence_rows)
