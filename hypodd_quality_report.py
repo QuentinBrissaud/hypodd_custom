@@ -496,14 +496,51 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
         plt.close()
         plot_paths.append(str(path))
 
+    raw = summaries.get("_raw", {})
+
+    for original_key, relocated_key, title, filename in [
+        (
+            "interevent_original_km",
+            "interevent_relocated_km",
+            "Inter-Event Distances",
+            "interevent_original_vs_relocated_km.png",
+        ),
+        (
+            "nearest_original_km",
+            "nearest_relocated_km",
+            "Nearest-Neighbor Distances",
+            "nearest_original_vs_relocated_km.png",
+        ),
+    ]:
+        original_values = raw.get(original_key, [])
+        relocated_values = raw.get(relocated_key, [])
+        if not original_values and not relocated_values:
+            continue
+        plt.figure()
+        plt.hist(
+            original_values,
+            bins=50,
+            alpha=0.5,
+            label="Original",
+            density=False,
+        )
+        plt.hist(
+            relocated_values,
+            bins=50,
+            alpha=0.5,
+            label="Relocated",
+            density=False,
+        )
+        plt.xlabel("km")
+        plt.ylabel("count")
+        plt.title(title)
+        plt.legend()
+        save_current(filename)
+
     for key, title in [
-        ("interevent_original_km", "Inter-Event Distances: Original"),
-        ("interevent_relocated_km", "Inter-Event Distances: Relocated"),
-        ("nearest_original_km", "Nearest-Neighbor Distances: Original"),
-        ("nearest_relocated_km", "Nearest-Neighbor Distances: Relocated"),
         ("horizontal_shift_km", "Horizontal Relocation Shifts"),
     ]:
-        values = summaries.get("_raw", {}).get(key, [])
+        values = raw.get(key, [])
         if not values:
             continue
         plt.figure()
