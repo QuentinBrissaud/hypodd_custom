@@ -35,7 +35,7 @@ HYPODD_MD5_HASHES = [
     "ac7fb5829abef23aa91f1f8a115e2b45",
     "94228305b2370c4f3371fc6cb76f92c5",
 ]
-HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v2"
+HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v3"
 
 
 class HypoDDCompilationError(Exception):
@@ -271,10 +271,12 @@ class HypoDDCompiler(object):
 
       integer i
       integer iunit
+      logical lexist
 
       call freeunit(iunit)
-      open(iunit,file=fn,status='unknown')
-      write(iunit,'(a)')
+      inquire(file=fn,exist=lexist)
+      open(iunit,file=fn,status='unknown',position='append')
+      if(.not.lexist) write(iunit,'(a)')
      &'# STA OBS_S CALC_S RES_S C1 C2 IDX QUAL WT OFFS'
       write(iunit,'(a7,1x,f12.7,1x,f12.7,1x,f12.7,1x,
      & i9,1x,i9,1x,i1,1x,f9.4,1x,f11.6,1x,f8.1)')
@@ -302,10 +304,12 @@ class HypoDDCompiler(object):
       integer i
       integer j
       integer iunit
+      logical lexist
 
       call freeunit(iunit)
-      open(iunit,file=fn,status='unknown')
-      write(iunit,'(a)')'# CUSP STA TTP_S TTS_S'
+      inquire(file=fn,exist=lexist)
+      open(iunit,file=fn,status='unknown',position='append')
+      if(.not.lexist) write(iunit,'(a)')'# CUSP STA TTP_S TTS_S'
       do j=1,nsrc
          write(iunit,'(i9,1x,a7,1x,f12.7,1x,f12.7)')
      &   (src_cusp(j),sta_lab(i),tmp_ttp(i,j),tmp_tts(i,j),i=1,nsta)

@@ -82,12 +82,111 @@ def _summary(values):
     }
 
 
+def _residual_summary(prefix, residuals):
+    values = [row["residual_s"] for row in residuals]
+    abs_values = [abs(value) for value in values]
+    if not values:
+        return {
+            "%s_count" % prefix: 0,
+            "%s_mean_abs_s" % prefix: math.nan,
+            "%s_median_abs_s" % prefix: math.nan,
+            "%s_rms_s" % prefix: math.nan,
+            "%s_mean_s" % prefix: math.nan,
+            "%s_p05_abs_s" % prefix: math.nan,
+            "%s_p95_abs_s" % prefix: math.nan,
+        }
+    sorted_abs = sorted(abs_values)
+    return {
+        "%s_count" % prefix: len(values),
+        "%s_mean_abs_s" % prefix: sum(abs_values) / len(abs_values),
+        "%s_median_abs_s" % prefix: _percentile(sorted_abs, 50),
+        "%s_rms_s" % prefix: math.sqrt(
+            sum(value * value for value in values) / len(values)
+        ),
+        "%s_mean_s" % prefix: sum(values) / len(values),
+        "%s_p05_abs_s" % prefix: _percentile(sorted_abs, 5),
+        "%s_p95_abs_s" % prefix: _percentile(sorted_abs, 95),
+    }
+
+
+def event_pick_residual_summary_rows(pick_rows):
+    grouped = defaultdict(lambda: defaultdict(list))
+    for row in pick_rows:
+        grouped[row["event_id"]][row["dataset"]].append(row)
+
+    rows = []
+    for event_id in sorted(grouped):
+        row = {"event_id": event_id}
+        for dataset in ["original", "relocated"]:
+            dataset_rows = grouped[event_id].get(dataset, [])
+            row.update(_residual_summary("%s_pick" % dataset, dataset_rows))
+            row["%s_pick_p_count" % dataset] = sum(
+                1 for item in dataset_rows if item.get("phase") == "P"
+            )
+            row["%s_pick_s_count" % dataset] = sum(
+                1 for item in dataset_rows if item.get("phase") == "S"
+            )
+        rows.append(row)
+    return rows
+
+
+def event_double_difference_summary_rows(dd_rows):
+    grouped = defaultdict(lambda: defaultdict(list))
+    for row in dd_rows:
+        for key in ["event_id_1", "event_id_2"]:
+            grouped[row[key]][row["dataset"]].append(row)
+
+    rows = []
+    for event_id in sorted(grouped):
+        row = {"event_id": event_id}
+        for dataset in ["original", "relocated"]:
+            dataset_rows = grouped[event_id].get(dataset, [])
+            row.update(_residual_summary("%s_dd" % dataset, dataset_rows))
+            linked_events = set()
+            for item in dataset_rows:
+                linked_events.add(item["event_id_1"])
+                linked_events.add(item["event_id_2"])
+            linked_events.discard(event_id)
+            row["%s_dd_linked_event_count" % dataset] = len(linked_events)
+            row["%s_dd_station_count" % dataset] = len(
+                {item["station_id"] for item in dataset_rows}
+            )
+            row["%s_dd_p_count" % dataset] = sum(
+                1 for item in dataset_rows if item.get("phase") == "P"
+            )
+            row["%s_dd_s_count" % dataset] = sum(
+                1 for item in dataset_rows if item.get("phase") == "S"
+            )
+        rows.append(row)
+    return rows
+
+
+def combined_event_residual_summary_rows(pick_event_rows, dd_event_rows):
+    by_event = {}
+    for row in pick_event_rows:
+        by_event.setdefault(row["event_id"], {"event_id": row["event_id"]}).update(row)
+    for row in dd_event_rows:
+        by_event.setdefault(row["event_id"], {"event_id": row["event_id"]}).update(row)
+
+    for row in by_event.values():
+        original_pick = row.get("original_pick_mean_abs_s", math.nan)
+        relocated_pick = row.get("relocated_pick_mean_abs_s", math.nan)
+        original_dd = row.get("original_dd_mean_abs_s", math.nan)
+        relocated_dd = row.get("relocated_dd_mean_abs_s", math.nan)
+        row["pick_mean_abs_change_s"] = relocated_pick - original_pick
+        row["dd_mean_abs_change_s"] = relocated_dd - original_dd
+
+    return [by_event[event_id] for event_id in sorted(by_event)]
+
+
 def _write_rows(path, rows, fieldnames=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = list(rows)
     if fieldnames is None:
         fieldnames = sorted({key for row in rows for key in row})
+    if not fieldnames:
+        fieldnames = ["no_rows"]
     with open(path, "w", newline="", encoding="utf-8") as open_file:
         writer = csv.DictWriter(open_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -712,6 +811,18 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
             "Absolute Catalog Double-Difference Residuals From Travel-Time Model",
             "model_dd_abs_residual_original_vs_relocated_s.png",
         ),
+        (
+            "event_pick_mean_abs_original_s",
+            "event_pick_mean_abs_relocated_s",
+            "Event-Wise Mean Absolute Pick Residuals",
+            "event_pick_mean_abs_original_vs_relocated_s.png",
+        ),
+        (
+            "event_dd_mean_abs_original_s",
+            "event_dd_mean_abs_relocated_s",
+            "Event-Wise Mean Absolute Double-Difference Residuals",
+            "event_dd_mean_abs_original_vs_relocated_s.png",
+        ),
     ]:
         original_values = raw.get(original_key, [])
         relocated_values = raw.get(relocated_key, [])
@@ -764,6 +875,16 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
             "model_dd_abs_residual_original_s",
             "model_dd_abs_residual_relocated_s",
             "Catalog double-difference residual",
+        ),
+        (
+            "event_pick_mean_abs_original_s",
+            "event_pick_mean_abs_relocated_s",
+            "Event-wise pick residual",
+        ),
+        (
+            "event_dd_mean_abs_original_s",
+            "event_dd_mean_abs_relocated_s",
+            "Event-wise DD residual",
         ),
     ]
     labels = []
@@ -1130,6 +1251,12 @@ def create_quality_report(
             "relocated",
         )
     model_dd_rows = model_dd_original + model_dd_relocated
+    event_pick_rows = event_pick_residual_summary_rows(pick_rows)
+    event_dd_rows = event_double_difference_summary_rows(model_dd_rows)
+    event_residual_rows = combined_event_residual_summary_rows(
+        event_pick_rows,
+        event_dd_rows,
+    )
 
     raw = {
         "interevent_original_km": inter_event_distances(original),
@@ -1150,6 +1277,26 @@ def create_quality_report(
         ],
         "model_dd_abs_residual_relocated_s": [
             row["absolute_residual_s"] for row in model_dd_relocated
+        ],
+        "event_pick_mean_abs_original_s": [
+            row["original_pick_mean_abs_s"]
+            for row in event_pick_rows
+            if math.isfinite(row["original_pick_mean_abs_s"])
+        ],
+        "event_pick_mean_abs_relocated_s": [
+            row["relocated_pick_mean_abs_s"]
+            for row in event_pick_rows
+            if math.isfinite(row["relocated_pick_mean_abs_s"])
+        ],
+        "event_dd_mean_abs_original_s": [
+            row["original_dd_mean_abs_s"]
+            for row in event_dd_rows
+            if math.isfinite(row["original_dd_mean_abs_s"])
+        ],
+        "event_dd_mean_abs_relocated_s": [
+            row["relocated_dd_mean_abs_s"]
+            for row in event_dd_rows
+            if math.isfinite(row["relocated_dd_mean_abs_s"])
         ],
     }
 
@@ -1194,6 +1341,12 @@ def create_quality_report(
     _write_rows(
         output_dir / "model_double_difference_residuals.csv", model_dd_rows
     )
+    _write_rows(output_dir / "event_pick_residual_summary.csv", event_pick_rows)
+    _write_rows(
+        output_dir / "event_double_difference_residual_summary.csv",
+        event_dd_rows,
+    )
+    _write_rows(output_dir / "event_residual_summary.csv", event_residual_rows)
     _write_rows(output_dir / "station_residuals.csv", station_rows)
     _write_rows(output_dir / "cluster_sizes.csv", cluster_rows)
     _write_rows(output_dir / "iteration_convergence.csv", convergence_rows)
