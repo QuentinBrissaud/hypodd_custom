@@ -35,7 +35,7 @@ HYPODD_MD5_HASHES = [
     "ac7fb5829abef23aa91f1f8a115e2b45",
     "94228305b2370c4f3371fc6cb76f92c5",
 ]
-HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v4"
+HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v6"
 
 
 class HypoDDCompilationError(Exception):
@@ -458,6 +458,21 @@ class HypoDDCompiler(object):
             1,
         )
         source = source.replace(
+            "\tinteger\t\ti\n\tinteger\t\tistop",
+            "\tinteger\t\ti\n\tinteger\t\tj\n\tinteger\t\tistop",
+            1,
+        )
+        source = source.replace(
+            "integer\t\tiw(2*(8*MAXDATA+4*MAXEVE)+1)\t! lsqr index array",
+            "integer\t\tiw(2*(8*MAXDATA+8*MAXEVE)+1)\t! lsqr index array",
+            1,
+        )
+        source = source.replace(
+            "real\t\trw(8*MAXDATA+4*MAXEVE)",
+            "real\t\trw(8*MAXDATA+8*MAXEVE)",
+            1,
+        )
+        source = source.replace(
             "real\t\twtinv(MAXDATA+4)! +4 = mean shift constr\n"
             "\treal\t\twt(MAXDATA+4)",
             "real\t\twtinv(MAXDATA+4*MAXEVE+4)\n"
@@ -632,16 +647,22 @@ c     CODEX LSQR mean-shift constraint patch: equation (9).
             stderr=subprocess.STDOUT,
             universal_newlines=True,
         )
-        self.log(sub.stdout.read())
+        make_output = sub.stdout.read()
+        self.log(make_output)
         retcode = sub.wait()
         if retcode != 0:
-            msg = "Problem compiling HypoDD."
+            tail = "\n".join(make_output.splitlines()[-40:])
+            msg = "Problem compiling HypoDD.\n\nLast make output:\n%s" % tail
             raise HypoDDCompilationError(msg)
         # Check if the output files have been created.
         if not os.path.exists(
             self.paths["compiled_hypodd_binary"]
         ) or not os.path.exists(self.paths["compiled_ph2dt_binary"]):
-            msg = "The binary output files could not be found."
+            tail = "\n".join(make_output.splitlines()[-40:])
+            msg = (
+                "The binary output files could not be found."
+                "\n\nLast make output:\n%s" % tail
+            )
             raise HypoDDCompilationError(msg)
         # Move the binary files and the hypoDD.inc file.
         shutil.move(
