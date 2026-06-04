@@ -594,6 +594,11 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
 
     cities = [
         ("Kyiv", 50.4501, 30.5234),
+        ("Korosten", 50.95937, 28.63855),
+        ("Zhytomyr", 50.26235, 28.67913),
+        ("Malyn", 50.77233, 29.23833),
+        ("Chornobyl", 51.26667, 30.21667),
+        ("Fastiv", 50.07670, 29.91770),
         ("Kharkiv", 49.9935, 36.2304),
         ("Odesa", 46.4825, 30.7233),
         ("Dnipro", 48.4647, 35.0462),
