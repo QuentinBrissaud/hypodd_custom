@@ -35,7 +35,7 @@ HYPODD_MD5_HASHES = [
     "ac7fb5829abef23aa91f1f8a115e2b45",
     "94228305b2370c4f3371fc6cb76f92c5",
 ]
-HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v6"
+HYPODD_DIAGNOSTIC_PATCH_VERSION = "ddres-diagnostics-v7"
 
 
 class HypoDDCompilationError(Exception):
@@ -64,6 +64,10 @@ class HypoDDCompiler(object):
         working_dir,
         log_function,
         enforce_mean_shift_constraint=False,
+        mean_shift_constraint_weight=10.0,
+        lsqr_constraint_weight=100.0,
+        lsqr_xyz_constraint_weight=10.0,
+        lsqr_time_constraint_weight=1000.0,
     ):
         """
         :param working_dir: The working directory. Everything will happen in
@@ -75,6 +79,10 @@ class HypoDDCompiler(object):
         self.enforce_mean_shift_constraint = bool(
             enforce_mean_shift_constraint
         )
+        self.mean_shift_constraint_weight = float(mean_shift_constraint_weight)
+        self.lsqr_constraint_weight = float(lsqr_constraint_weight)
+        self.lsqr_xyz_constraint_weight = float(lsqr_xyz_constraint_weight)
+        self.lsqr_time_constraint_weight = float(lsqr_time_constraint_weight)
         # Set the working dir and create it if necessary.
         self.working_dir = working_dir
         if not os.path.exists(self.working_dir):
@@ -250,6 +258,11 @@ class HypoDDCompiler(object):
         return "%s;mean_shift=%s" % (
             HYPODD_DIAGNOSTIC_PATCH_VERSION,
             int(self.enforce_mean_shift_constraint),
+        ) + ";msw=%.8g;lcw=%.8g;lxyz=%.8g;ltw=%.8g" % (
+            self.mean_shift_constraint_weight,
+            self.lsqr_constraint_weight,
+            self.lsqr_xyz_constraint_weight,
+            self.lsqr_time_constraint_weight,
         )
 
     def _patch_unpacked_hypodd_sources(self):
@@ -451,6 +464,10 @@ class HypoDDCompiler(object):
             source = open_file.read()
         if "CODEX LSQR mean-shift constraint patch" in source:
             return
+        mean_shift_weight = "%.8g" % self.mean_shift_constraint_weight
+        constraint_weight = "%.8g" % self.lsqr_constraint_weight
+        xyz_constraint_weight = "%.8g" % self.lsqr_xyz_constraint_weight
+        time_constraint_weight = "%.8g" % self.lsqr_time_constraint_weight
 
         source = source.replace(
             "real\t\td(MAXDATA+4)\t! Data vector",
@@ -511,15 +528,28 @@ c     CODEX LSQR mean-shift constraint patch: equation (9).
          do j=1,nev
             iw(1 + nrw +(i-1)*nev+j)= nndt + i
             iw(1 + nar + nrw +(i-1)*nev+j)= (i-1) + j*4-3
-            rw(nrw + (i-1)*nev+j)= 10.0
+            rw(nrw + (i-1)*nev+j)= {mean_shift_weight}
          enddo
       enddo
       nrw= nrw+4*nev
-      nndt= nndt+4"""
+      nndt= nndt+4""".format(mean_shift_weight=mean_shift_weight)
         if old_block not in source:
             msg = "Could not patch LSQR mean-shift constraint block."
             raise HypoDDCompilationError(msg)
         source = source.replace(old_block, new_block, 1)
+
+        source = source.replace(
+            "rw(nrw +k) = 100.0",
+            "rw(nrw +k) = %s" % constraint_weight,
+        )
+        source = source.replace(
+            "rw(nrw +k) = 10.0",
+            "rw(nrw +k) = %s" % xyz_constraint_weight,
+        )
+        source = source.replace(
+            "rw(nrw +k) = 1000.0",
+            "rw(nrw +k) = %s" % time_constraint_weight,
+        )
 
         source = source.replace(
             "      nrw= nrw + k-1\n"

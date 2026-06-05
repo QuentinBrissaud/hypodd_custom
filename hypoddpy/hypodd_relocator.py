@@ -53,6 +53,10 @@ class HypoDDRelocator(object):
         event_fix=None,
         fixed_depth_km=None,
         enforce_mean_shift_constraint=False,
+        mean_shift_constraint_weight=10.0,
+        lsqr_constraint_weight=100.0,
+        lsqr_xyz_constraint_weight=10.0,
+        lsqr_time_constraint_weight=1000.0,
     ):
         """
         :param working_dir: The working directory where all temporary and final
@@ -103,6 +107,14 @@ class HypoDDRelocator(object):
         :param enforce_mean_shift_constraint: If True, patch HypoDD's LSQR
             solver to add four rows enforcing zero mean x/y/z/origin-time
             update per cluster, matching the SVD mean-shift constraint.
+        :param mean_shift_constraint_weight: Weight for the LSQR mean-shift
+            constraint rows.
+        :param lsqr_constraint_weight: Default weight for LSQR fixed-parameter
+            constraints from ev_fix.
+        :param lsqr_xyz_constraint_weight: Lower weight used by HypoDD for the
+            ev_fix=3 x/y/z fixed-parameter constraints.
+        :param lsqr_time_constraint_weight: Weight used by HypoDD for the
+            ev_fix=5 origin-time fixed-parameter constraint.
         """
         self.working_dir = working_dir
         if not os.path.exists(working_dir):
@@ -159,6 +171,10 @@ class HypoDDRelocator(object):
         self.enforce_mean_shift_constraint = bool(
             enforce_mean_shift_constraint
         )
+        self.mean_shift_constraint_weight = float(mean_shift_constraint_weight)
+        self.lsqr_constraint_weight = float(lsqr_constraint_weight)
+        self.lsqr_xyz_constraint_weight = float(lsqr_xyz_constraint_weight)
+        self.lsqr_time_constraint_weight = float(lsqr_time_constraint_weight)
 
         # Setup logging.
         logging.basicConfig(
@@ -341,7 +357,9 @@ class HypoDDRelocator(object):
         Supported sections:
             [relocator]
                 use_cross_correlation, event_fix, fixed_depth_km,
-                enforce_mean_shift_constraint
+                enforce_mean_shift_constraint, mean_shift_constraint_weight,
+                lsqr_constraint_weight, lsqr_xyz_constraint_weight,
+                lsqr_time_constraint_weight
 
             [ph2dt]
                 MINWGHT, MAXDIST, MAXSEP, MAXNGH, MINLNK, MINOBS, MAXOBS
@@ -376,6 +394,14 @@ class HypoDDRelocator(object):
                 self.enforce_mean_shift_constraint = section.getboolean(
                     "enforce_mean_shift_constraint"
                 )
+            for key in [
+                "mean_shift_constraint_weight",
+                "lsqr_constraint_weight",
+                "lsqr_xyz_constraint_weight",
+                "lsqr_time_constraint_weight",
+            ]:
+                if key in section:
+                    setattr(self, key, section.getfloat(key))
 
         if parser.has_section("compiler"):
             for key, value in parser.items("compiler"):
@@ -947,6 +973,12 @@ class HypoDDRelocator(object):
                 enforce_mean_shift_constraint=(
                     self.enforce_mean_shift_constraint
                 ),
+                mean_shift_constraint_weight=(
+                    self.mean_shift_constraint_weight
+                ),
+                lsqr_constraint_weight=self.lsqr_constraint_weight,
+                lsqr_xyz_constraint_weight=self.lsqr_xyz_constraint_weight,
+                lsqr_time_constraint_weight=self.lsqr_time_constraint_weight,
             )
             compiler_config = {
                 "MAXEVE": len(self.events) + 30,

@@ -1056,6 +1056,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
     """
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
         import cartopy.crs as ccrs
         import cartopy.feature as cfeature
     except ImportError:
@@ -1091,9 +1092,41 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
     ]
 
     datasets = [
-        ("Original Events", original, "tab:blue"),
-        ("Relocated Events", relocated, "tab:red"),
+        ("Original Events", original),
+        ("Relocated Events", relocated),
     ]
+
+    cluster_ids = sorted(
+        {
+            event.get("cluster_id")
+            for event in list(original.values()) + list(relocated.values())
+            if event.get("cluster_id") not in ("", None)
+        }
+    )
+    if not cluster_ids:
+        cluster_ids = sorted(
+            {
+                relocated[event_id].get("cluster_id")
+                for event_id in set(original).intersection(relocated)
+                if relocated[event_id].get("cluster_id") not in ("", None)
+            }
+        )
+    cmap = plt.get_cmap("tab20")
+    cluster_colors = {
+        cluster_id: cmap(index % cmap.N)
+        for index, cluster_id in enumerate(cluster_ids)
+    }
+    unknown_cluster_color = "0.55"
+
+    def event_cluster(event_id, event):
+        cluster_id = event.get("cluster_id")
+        if cluster_id in ("", None) and event_id in relocated:
+            cluster_id = relocated[event_id].get("cluster_id")
+        return cluster_id
+
+    def event_color(event_id, event):
+        cluster_id = event_cluster(event_id, event)
+        return cluster_colors.get(cluster_id, unknown_cluster_color)
 
     all_lats = (
         [event["latitude"] for event in original.values()]
@@ -1175,6 +1208,74 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
         gl.top_labels = False
         gl.right_labels = False
 
+    def add_cluster_legend(ax, include_markers=True):
+        handles = []
+        if include_markers:
+            handles.extend(
+                [
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="none",
+                        markerfacecolor="0.35",
+                        markeredgecolor="0.35",
+                        markersize=5,
+                        label="Original event",
+                    ),
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="x",
+                        color="0.35",
+                        linestyle="none",
+                        markersize=5,
+                        label="Relocated event",
+                    ),
+                ]
+            )
+        for cluster_id in cluster_ids[:12]:
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor=cluster_colors[cluster_id],
+                    markeredgecolor=cluster_colors[cluster_id],
+                    markersize=5,
+                    label="Cluster %s" % cluster_id,
+                )
+            )
+        if len(cluster_ids) > 12:
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="none",
+                    label="+%i more clusters" % (len(cluster_ids) - 12),
+                )
+            )
+        if handles:
+            ax.legend(handles=handles, loc="lower left", fontsize=7)
+
+    def scatter_events(ax, events, projection, marker="o", label=None, zorder=3):
+        event_items = sorted(events.items())
+        if not event_items:
+            return
+        ax.scatter(
+            [event["longitude"] for _, event in event_items],
+            [event["latitude"] for _, event in event_items],
+            s=10,
+            c=[event_color(event_id, event) for event_id, event in event_items],
+            alpha=0.65,
+            marker=marker,
+            linewidths=0.4 if marker == "x" else 0,
+            transform=projection,
+            label=label,
+            zorder=zorder,
+        )
+
     plot_paths = []
 
     try:
@@ -1185,25 +1286,17 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
             figsize=(14, 7),
             subplot_kw={"projection": projection},
         )
-        for ax, (title, events, color) in zip(axes, datasets):
+        for ax, (title, events) in zip(axes, datasets):
             add_base_map(ax, projection)
-            longitudes = [event["longitude"] for event in events.values()]
-            latitudes = [event["latitude"] for event in events.values()]
-            ax.scatter(
-                longitudes,
-                latitudes,
-                s=8,
-                c=color,
-                alpha=0.55,
-                linewidths=0,
-                transform=projection,
-                label=title,
-            )
+            scatter_events(ax, events, projection, marker="o", label=title)
             add_stations(ax, projection)
             add_cities(ax, projection)
             add_grid(ax)
-            ax.set_title("%s (%i)" % (title, len(events)))
-            ax.legend(loc="lower left", fontsize=8)
+            ax.set_title(
+                "%s (%i events, %i clusters)"
+                % (title, len(events), len(cluster_ids))
+            )
+            add_cluster_legend(ax, include_markers=False)
 
         plt.tight_layout()
         plt.savefig(path, dpi=180)
@@ -1217,42 +1310,40 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
         for event_id in common_event_ids:
             original_event = original[event_id]
             relocated_event = relocated[event_id]
+            color = event_color(event_id, relocated_event)
             ax.plot(
                 [original_event["longitude"], relocated_event["longitude"]],
                 [original_event["latitude"], relocated_event["latitude"]],
-                color="0.35",
+                color=color,
                 linewidth=0.35,
-                alpha=0.35,
+                alpha=0.45,
                 transform=projection,
                 zorder=2,
             )
-        ax.scatter(
-            [original[event_id]["longitude"] for event_id in common_event_ids],
-            [original[event_id]["latitude"] for event_id in common_event_ids],
-            s=8,
-            c="tab:blue",
-            alpha=0.55,
-            linewidths=0,
-            transform=projection,
+        scatter_events(
+            ax,
+            {event_id: original[event_id] for event_id in common_event_ids},
+            projection,
+            marker="o",
             label="Original Events",
             zorder=3,
         )
-        ax.scatter(
-            [relocated[event_id]["longitude"] for event_id in common_event_ids],
-            [relocated[event_id]["latitude"] for event_id in common_event_ids],
-            s=8,
-            c="tab:red",
-            alpha=0.55,
-            linewidths=0,
-            transform=projection,
+        scatter_events(
+            ax,
+            {event_id: relocated[event_id] for event_id in common_event_ids},
+            projection,
+            marker="x",
             label="Relocated Events",
-            zorder=3,
+            zorder=4,
         )
         add_stations(ax, projection)
         add_cities(ax, projection)
         add_grid(ax)
-        ax.set_title("Event Relocation Vectors (%i matched events)" % len(common_event_ids))
-        ax.legend(loc="lower left", fontsize=8)
+        ax.set_title(
+            "Event Relocation Vectors (%i matched events, %i clusters)"
+            % (len(common_event_ids), len(cluster_ids))
+        )
+        add_cluster_legend(ax, include_markers=True)
         plt.tight_layout()
         plt.savefig(relocation_path, dpi=180)
         plt.close(fig)
