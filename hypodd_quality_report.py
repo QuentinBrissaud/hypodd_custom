@@ -1216,19 +1216,19 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
                     Line2D(
                         [0],
                         [0],
-                        marker="o",
-                        color="none",
-                        markerfacecolor="0.35",
-                        markeredgecolor="0.35",
+                        marker="x",
+                        color="0.35",
+                        linestyle="none",
                         markersize=5,
                         label="Original event",
                     ),
                     Line2D(
                         [0],
                         [0],
-                        marker="x",
-                        color="0.35",
-                        linestyle="none",
+                        marker="o",
+                        color="none",
+                        markerfacecolor="0.35",
+                        markeredgecolor="0.35",
                         markersize=5,
                         label="Relocated event",
                     ),
@@ -1288,7 +1288,8 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
         )
         for ax, (title, events) in zip(axes, datasets):
             add_base_map(ax, projection)
-            scatter_events(ax, events, projection, marker="o", label=title)
+            marker = "x" if title.startswith("Original") else "o"
+            scatter_events(ax, events, projection, marker=marker, label=title)
             add_stations(ax, projection)
             add_cities(ax, projection)
             add_grid(ax)
@@ -1324,7 +1325,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
             ax,
             {event_id: original[event_id] for event_id in common_event_ids},
             projection,
-            marker="o",
+            marker="x",
             label="Original Events",
             zorder=3,
         )
@@ -1332,7 +1333,7 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
             ax,
             {event_id: relocated[event_id] for event_id in common_event_ids},
             projection,
-            marker="x",
+            marker="o",
             label="Relocated Events",
             zorder=4,
         )
