@@ -850,6 +850,271 @@ def parse_hypodd_log(path):
     return rows
 
 
+def _month_label(time):
+    if time is None:
+        return ""
+    return time.strftime("%Y-%m")
+
+
+def _midpoint_time(time_1, time_2):
+    return time_1 + (time_2 - time_1) / 2
+
+
+def add_pick_plot_metadata(rows, locations):
+    """
+    Add month and cluster metadata to pick residual rows.
+    """
+    enriched = []
+    for row in rows:
+        event = locations.get(row["event_id"])
+        if event is None:
+            continue
+        item = dict(row)
+        item["month"] = _month_label(event["time"])
+        item["cluster_id"] = event.get("cluster_id", "")
+        enriched.append(item)
+    return enriched
+
+
+def add_dd_plot_metadata(rows, locations):
+    """
+    Add midpoint month and cluster metadata to DD residual rows.
+
+    A DD residual is assigned to a cluster only when both events belong to the
+    same cluster. Cross-cluster residuals are skipped for cluster boxplots.
+    """
+    enriched = []
+    for row in rows:
+        event_1 = locations.get(row["event_id_1"])
+        event_2 = locations.get(row["event_id_2"])
+        if event_1 is None or event_2 is None:
+            continue
+        item = dict(row)
+        item["month"] = _month_label(_midpoint_time(event_1["time"], event_2["time"]))
+        cluster_1 = event_1.get("cluster_id", "")
+        cluster_2 = event_2.get("cluster_id", "")
+        item["cluster_id"] = cluster_1 if cluster_1 == cluster_2 else ""
+        enriched.append(item)
+    return enriched
+
+
+def _selected_cluster_ids(cluster_rows, max_clusters_to_plot):
+    cluster_rows = [
+        row for row in cluster_rows if row.get("cluster_id") not in ("", None)
+    ]
+    cluster_rows = sorted(
+        cluster_rows,
+        key=lambda row: (-int(row.get("event_count", 0)), row.get("cluster_id")),
+    )
+    if max_clusters_to_plot is not None:
+        cluster_rows = cluster_rows[:max_clusters_to_plot]
+    return [row["cluster_id"] for row in cluster_rows]
+
+
+def _boxplot_values(rows, group_key, value_key, groups, phase=None):
+    values = []
+    for group in groups:
+        group_values = []
+        for row in rows:
+            if row.get(group_key) != group:
+                continue
+            if phase is not None and row.get("phase") != phase:
+                continue
+            value = row.get(value_key, math.nan)
+            if math.isfinite(value):
+                group_values.append(value)
+        values.append(group_values)
+    return values
+
+
+def _draw_boxplot(
+    ax,
+    rows,
+    group_key,
+    value_key,
+    groups,
+    title,
+    ylabel,
+    phase=None,
+    signed=False,
+):
+    values = _boxplot_values(rows, group_key, value_key, groups, phase=phase)
+    non_empty = [(group, vals) for group, vals in zip(groups, values) if vals]
+    if not non_empty:
+        ax.set_axis_off()
+        return False
+    labels, data = zip(*non_empty)
+    ax.boxplot(data, labels=[str(label) for label in labels], showfliers=False)
+    if signed:
+        ax.axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis="x", labelrotation=45)
+    return True
+
+
+def make_residual_boxplots(
+    output_dir,
+    dd_rows,
+    pick_rows,
+    cluster_rows,
+    max_clusters_to_plot=12,
+):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return []
+
+    output_dir = Path(output_dir)
+    plot_paths = []
+
+    def save(fig, filename):
+        path = output_dir / filename
+        fig.tight_layout()
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        plot_paths.append(str(path))
+
+    months = sorted(
+        {
+            row.get("month")
+            for row in dd_rows + pick_rows
+            if row.get("month") not in ("", None)
+        }
+    )
+    cluster_ids = _selected_cluster_ids(cluster_rows, max_clusters_to_plot)
+
+    if months:
+        fig, axes = plt.subplots(2, 1, figsize=(max(8, len(months) * 0.45), 7))
+        drawn = [
+            _draw_boxplot(
+                axes[0],
+                dd_rows,
+                "month",
+                "residual_s",
+                months,
+                "Signed Double-Difference Residuals By Month",
+                "DD residual (s)",
+                signed=True,
+            ),
+            _draw_boxplot(
+                axes[1],
+                pick_rows,
+                "month",
+                "absolute_residual_s",
+                months,
+                "Absolute Pick Residuals By Month",
+                "|pick residual| (s)",
+            ),
+        ]
+        if any(drawn):
+            save(fig, "residual_boxplots_by_month.png")
+        else:
+            plt.close(fig)
+
+        fig, axes = plt.subplots(
+            2, 2, figsize=(max(10, len(months) * 0.55), 8), sharex=True
+        )
+        drawn = []
+        for row_index, phase in enumerate(["P", "S"]):
+            drawn.append(
+                _draw_boxplot(
+                    axes[row_index][0],
+                    dd_rows,
+                    "month",
+                    "residual_s",
+                    months,
+                    "%s Signed DD Residuals By Month" % phase,
+                    "DD residual (s)",
+                    phase=phase,
+                    signed=True,
+                )
+            )
+            drawn.append(
+                _draw_boxplot(
+                    axes[row_index][1],
+                    pick_rows,
+                    "month",
+                    "absolute_residual_s",
+                    months,
+                    "%s Absolute Pick Residuals By Month" % phase,
+                    "|pick residual| (s)",
+                    phase=phase,
+                )
+            )
+        if any(drawn):
+            save(fig, "residual_boxplots_by_month_by_phase.png")
+        else:
+            plt.close(fig)
+
+    if cluster_ids:
+        fig, axes = plt.subplots(
+            2, 1, figsize=(max(8, len(cluster_ids) * 0.55), 7)
+        )
+        drawn = [
+            _draw_boxplot(
+                axes[0],
+                dd_rows,
+                "cluster_id",
+                "residual_s",
+                cluster_ids,
+                "Signed Double-Difference Residuals By Cluster",
+                "DD residual (s)",
+                signed=True,
+            ),
+            _draw_boxplot(
+                axes[1],
+                pick_rows,
+                "cluster_id",
+                "absolute_residual_s",
+                cluster_ids,
+                "Absolute Pick Residuals By Cluster",
+                "|pick residual| (s)",
+            ),
+        ]
+        if any(drawn):
+            save(fig, "residual_boxplots_by_cluster.png")
+        else:
+            plt.close(fig)
+
+        fig, axes = plt.subplots(
+            2, 2, figsize=(max(10, len(cluster_ids) * 0.65), 8), sharex=True
+        )
+        drawn = []
+        for row_index, phase in enumerate(["P", "S"]):
+            drawn.append(
+                _draw_boxplot(
+                    axes[row_index][0],
+                    dd_rows,
+                    "cluster_id",
+                    "residual_s",
+                    cluster_ids,
+                    "%s Signed DD Residuals By Cluster" % phase,
+                    "DD residual (s)",
+                    phase=phase,
+                    signed=True,
+                )
+            )
+            drawn.append(
+                _draw_boxplot(
+                    axes[row_index][1],
+                    pick_rows,
+                    "cluster_id",
+                    "absolute_residual_s",
+                    cluster_ids,
+                    "%s Absolute Pick Residuals By Cluster" % phase,
+                    "|pick residual| (s)",
+                    phase=phase,
+                )
+            )
+        if any(drawn):
+            save(fig, "residual_boxplots_by_cluster_by_phase.png")
+        else:
+            plt.close(fig)
+
+    return plot_paths
+
+
 def make_plots(output_dir, summaries, residual_rows, convergence_rows):
     try:
         import matplotlib.pyplot as plt
@@ -1361,6 +1626,7 @@ def create_quality_report(
     velocity_model_csv,
     output_dir=None,
     create_plots=True,
+    max_clusters_to_plot=12,
 ):
     working_dir = Path(working_dir)
     output_dir = Path(output_dir) if output_dir else working_dir / "quality_report"
@@ -1538,6 +1804,8 @@ def create_quality_report(
         {"cluster_id": cluster_id, "event_count": count}
         for cluster_id, count in sorted(cluster_counts.items())
     ]
+    pick_plot_rows = add_pick_plot_metadata(pick_relocated, relocated)
+    dd_plot_rows = add_dd_plot_metadata(model_dd_relocated, relocated)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_rows(output_dir / "summary_metrics.csv", summary_rows)
@@ -1560,6 +1828,8 @@ def create_quality_report(
     _write_rows(output_dir / "station_residuals.csv", station_rows)
     _write_rows(output_dir / "cluster_sizes.csv", cluster_rows)
     _write_rows(output_dir / "iteration_convergence.csv", convergence_rows)
+    _write_rows(output_dir / "plot_pick_residuals_relocated.csv", pick_plot_rows)
+    _write_rows(output_dir / "plot_dd_residuals_relocated.csv", dd_plot_rows)
 
     plot_paths = []
     if create_plots:
@@ -1568,6 +1838,15 @@ def create_quality_report(
             {"_raw": raw},
             residual_rows,
             convergence_rows,
+        )
+        plot_paths.extend(
+            make_residual_boxplots(
+                output_dir,
+                dd_plot_rows,
+                pick_plot_rows,
+                cluster_rows,
+                max_clusters_to_plot=max_clusters_to_plot,
+            )
         )
         plot_paths.extend(
             make_ukraine_cartopy_plot(output_dir, original, relocated, stations)
@@ -1588,6 +1867,12 @@ def main():
     parser.add_argument("velocity_model_csv")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument(
+        "--max-clusters-to-plot",
+        type=int,
+        default=12,
+        help="Maximum number of largest clusters to show in cluster boxplots.",
+    )
     args = parser.parse_args()
 
     result = create_quality_report(
@@ -1595,6 +1880,7 @@ def main():
         velocity_model_csv=args.velocity_model_csv,
         output_dir=args.output_dir,
         create_plots=not args.no_plots,
+        max_clusters_to_plot=args.max_clusters_to_plot,
     )
     print("Wrote quality report to %s" % result["output_dir"])
 
