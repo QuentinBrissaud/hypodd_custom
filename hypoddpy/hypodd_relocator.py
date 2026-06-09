@@ -42,6 +42,7 @@ class HypoDDRelocator(object):
         cc_time_before=0.05,
         cc_time_after=0.2,
         cc_maxlag=0.1,
+        cc_filter="bandpass",
         cc_filter_min_freq=1.0,
         cc_filter_max_freq=20.0,
         cc_p_phase_weighting=None,
@@ -67,6 +68,8 @@ class HypoDDRelocator(object):
             in seconds. Defaults to 0.2.
         :param cc_maxlag: Maximum lag time tested during cross correlation.
             Defaults to 0.1.
+        :param cc_filter: Filter to apply during cross correlation. Use
+            "bandpass" or "none". Defaults to "bandpass".
         :param cc_filter_min_freq: Lower corner frequency for the Butterworth
             bandpass filter to be applied during cross correlation.
             Defaults to 1.0.
@@ -120,8 +123,14 @@ class HypoDDRelocator(object):
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
 
+        cc_filter = str(cc_filter).lower()
+        if cc_filter in ["", "none", "false", "off", "no"]:
+            cc_filter = None
+        elif cc_filter != "bandpass":
+            msg = "cc_filter must be 'bandpass' or 'none'."
+            raise HypoDDException(msg)
         # Some sanity checks.
-        if cc_filter_min_freq >= cc_filter_max_freq:
+        if cc_filter == "bandpass" and cc_filter_min_freq >= cc_filter_max_freq:
             msg = "cc_filter_min_freq has to smaller then cc_filter_max_freq."
             raise HypoDDException(msg)
         # Fill the phase weighting dict if necessary.
@@ -145,6 +154,7 @@ class HypoDDRelocator(object):
             "cc_time_before": cc_time_before,
             "cc_time_after": cc_time_after,
             "cc_maxlag": cc_maxlag,
+            "cc_filter": cc_filter,
             "cc_filter_min_freq": cc_filter_min_freq,
             "cc_filter_max_freq": cc_filter_max_freq,
             "cc_p_phase_weighting": cc_p_phase_weighting,
@@ -362,7 +372,7 @@ class HypoDDRelocator(object):
                 lsqr_time_constraint_weight
 
             [cross_correlation]
-                cc_time_before, cc_time_after, cc_maxlag,
+                cc_time_before, cc_time_after, cc_maxlag, cc_filter,
                 cc_filter_min_freq, cc_filter_max_freq,
                 cc_min_allowed_cross_corr_coeff, cc_p_phase_weighting,
                 cc_s_phase_weighting
@@ -411,6 +421,15 @@ class HypoDDRelocator(object):
 
         if parser.has_section("cross_correlation"):
             section = parser["cross_correlation"]
+            if "cc_filter" in section:
+                cc_filter = section.get("cc_filter").strip().lower()
+                if cc_filter in ["", "none", "false", "off", "no"]:
+                    self.cc_param["cc_filter"] = None
+                elif cc_filter == "bandpass":
+                    self.cc_param["cc_filter"] = "bandpass"
+                else:
+                    msg = "cc_filter must be 'bandpass' or 'none'."
+                    raise HypoDDException(msg)
             for key in [
                 "cc_time_before",
                 "cc_time_after",
@@ -1596,6 +1615,17 @@ class HypoDDRelocator(object):
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
                             try:
+                                filter_name = self.cc_param["cc_filter"]
+                                filter_options = None
+                                if filter_name == "bandpass":
+                                    filter_options = {
+                                        "freqmin": self.cc_param[
+                                            "cc_filter_min_freq"
+                                        ],
+                                        "freqmax": self.cc_param[
+                                            "cc_filter_max_freq"
+                                        ],
+                                    }
                                 (
                                     pick2_corr,
                                     cross_corr_coeff,
@@ -1607,15 +1637,8 @@ class HypoDDRelocator(object):
                                     t_before=self.cc_param["cc_time_before"],
                                     t_after=self.cc_param["cc_time_after"],
                                     cc_maxlag=self.cc_param["cc_maxlag"],
-                                    filter="bandpass",
-                                    filter_options={
-                                        "freqmin": self.cc_param[
-                                            "cc_filter_min_freq"
-                                        ],
-                                        "freqmax": self.cc_param[
-                                            "cc_filter_max_freq"
-                                        ],
-                                    },
+                                    filter=filter_name,
+                                    filter_options=filter_options,
                                     plot=False,
                                 )
                             except Exception as err:

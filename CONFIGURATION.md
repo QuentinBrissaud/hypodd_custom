@@ -94,6 +94,15 @@ Float in seconds. End the cross-correlation window this many seconds after the p
 
 Float in seconds. Maximum lag searched when correcting the second pick relative to the first pick.
 
+### `cc_filter`
+
+String. Filter applied before cross-correlation.
+
+Allowed values:
+
+- `bandpass`: apply the configured bandpass filter.
+- `none`: do not apply a filter inside `xcorr_pick_correction`.
+
 ### `cc_filter_min_freq`
 
 Float in Hz. Lower corner frequency of the bandpass filter applied before cross-correlation.
