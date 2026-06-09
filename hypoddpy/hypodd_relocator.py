@@ -361,6 +361,12 @@ class HypoDDRelocator(object):
                 lsqr_constraint_weight, lsqr_xyz_constraint_weight,
                 lsqr_time_constraint_weight
 
+            [cross_correlation]
+                cc_time_before, cc_time_after, cc_maxlag,
+                cc_filter_min_freq, cc_filter_max_freq,
+                cc_min_allowed_cross_corr_coeff, cc_p_phase_weighting,
+                cc_s_phase_weighting
+
             [ph2dt]
                 MINWGHT, MAXDIST, MAXSEP, MAXNGH, MINLNK, MINOBS, MAXOBS
 
@@ -403,6 +409,24 @@ class HypoDDRelocator(object):
                 if key in section:
                     setattr(self, key, section.getfloat(key))
 
+        if parser.has_section("cross_correlation"):
+            section = parser["cross_correlation"]
+            for key in [
+                "cc_time_before",
+                "cc_time_after",
+                "cc_maxlag",
+                "cc_filter_min_freq",
+                "cc_filter_max_freq",
+                "cc_min_allowed_cross_corr_coeff",
+            ]:
+                if key in section:
+                    self.cc_param[key] = section.getfloat(key)
+            for key in ["cc_p_phase_weighting", "cc_s_phase_weighting"]:
+                if key in section:
+                    self.cc_param[key] = self._parse_cc_phase_weighting(
+                        section.get(key)
+                    )
+
         if parser.has_section("compiler"):
             for key, value in parser.items("compiler"):
                 self.compiler_configuration_values[key.upper()] = int(
@@ -417,6 +441,30 @@ class HypoDDRelocator(object):
                     key, self._parse_configuration_value(key, value)
                 )
         self.log("Loaded configuration file: %s" % filename)
+
+    @staticmethod
+    def _parse_cc_phase_weighting(value):
+        """
+        Parse component weights from config strings like ``Z:1,E:0,N:0``.
+        """
+        weights = {}
+        value = value.strip()
+        if not value:
+            return weights
+        for item in value.split(","):
+            if not item.strip():
+                continue
+            if ":" not in item:
+                msg = (
+                    "Cross-correlation phase weighting entries must be "
+                    "component:weight pairs, e.g. Z:1.0,E:0.0,N:0.0."
+                )
+                raise HypoDDException(msg)
+            component, weight = item.split(":", 1)
+            weights[component.strip()] = float(weight.strip())
+        for component in ["Z", "E", "N"]:
+            weights[component] = float(weights.get(component, 0.0))
+        return weights
 
     def _parse_configuration_value(self, key, value):
         """

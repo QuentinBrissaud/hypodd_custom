@@ -73,6 +73,68 @@ Float. LSQR fixed-origin-time weight used by the patched HypoDD source for time-
 
 Default: `1000.0`, matching the original hardcoded HypoDD value.
 
+## `[cross_correlation]`
+
+These parameters control waveform cross-correlation. They are used only when:
+
+```ini
+[relocator]
+use_cross_correlation = true
+```
+
+### `cc_time_before`
+
+Float in seconds. Start the cross-correlation window this many seconds before the pick time.
+
+### `cc_time_after`
+
+Float in seconds. End the cross-correlation window this many seconds after the pick time.
+
+### `cc_maxlag`
+
+Float in seconds. Maximum lag searched when correcting the second pick relative to the first pick.
+
+### `cc_filter_min_freq`
+
+Float in Hz. Lower corner frequency of the bandpass filter applied before cross-correlation.
+
+### `cc_filter_max_freq`
+
+Float in Hz. Upper corner frequency of the bandpass filter applied before cross-correlation.
+
+### `cc_min_allowed_cross_corr_coeff`
+
+Float. Minimum accepted cross-correlation coefficient. Correlations below this value are discarded.
+
+### `cc_p_phase_weighting`
+
+Comma-separated component weights used for P-pick cross-correlation.
+
+Example:
+
+```ini
+cc_p_phase_weighting = Z:1.0,E:0.0,N:0.0
+```
+
+The component is matched as the final channel character, so `Z` matches channels such as `BHZ` or `HHZ`.
+
+### `cc_s_phase_weighting`
+
+Comma-separated component weights used for S-pick cross-correlation.
+
+Example:
+
+```ini
+cc_s_phase_weighting = Z:1.0,E:1.0,N:1.0
+```
+
+If you encode artificial phase-specific waveform channels, for example channels ending in `P` and `S`, use matching component keys:
+
+```ini
+cc_p_phase_weighting = P:1.0
+cc_s_phase_weighting = S:1.0
+```
+
 ## `[ph2dt]`
 
 These parameters control `ph2dt`, the program that builds catalog differential-time pairs from event picks.
