@@ -206,6 +206,12 @@ def _seconds_from_trace_start(trace, absolute_time):
     return float(UTCDateTime(absolute_time) - trace.stats.starttime)
 
 
+def _seconds_from_reference(reference_time, absolute_time):
+    from obspy import UTCDateTime
+
+    return float(UTCDateTime(absolute_time) - UTCDateTime(reference_time))
+
+
 def _add_seconds(origin_time, seconds):
     from datetime import timedelta
 
@@ -319,6 +325,7 @@ def plot_event_waveforms_with_arrivals(
     if max_traces is not None:
         traces = traces[:max_traces]
 
+    reference_time = min(trace.stats.starttime for trace in traces)
     fig, ax = plt.subplots(figsize=(11, max(4, 0.35 * len(traces) + 2)))
     offset_step = 1.4
     observed_label_used = False
@@ -328,17 +335,23 @@ def plot_event_waveforms_with_arrivals(
         if data.size == 0:
             continue
         offset = index * offset_step
-        time_axis = np.arange(len(data), dtype=float) / trace.stats.sampling_rate
+        trace_start_offset = _seconds_from_reference(
+            reference_time, trace.stats.starttime
+        )
+        time_axis = (
+            trace_start_offset
+            + np.arange(len(data), dtype=float) / trace.stats.sampling_rate
+        )
         ax.plot(time_axis, data + offset, color="black", linewidth=0.8)
 
         station_id = _trace_station_id(trace)
         for arrival in arrivals_by_station.get(station_id, []):
             observed_x = _seconds_from_trace_start(
                 trace, arrival["observed_pick_time"]
-            )
+            ) + trace_start_offset
             predicted_x = _seconds_from_trace_start(
                 trace, arrival["predicted_arrival_time"]
-            )
+            ) + trace_start_offset
             if 0 <= observed_x <= time_axis[-1]:
                 ax.plot(
                     [observed_x, observed_x],
@@ -380,7 +393,7 @@ def plot_event_waveforms_with_arrivals(
             Path(tt_path).name,
         )
     ax.set_title(title)
-    ax.set_xlabel("time since trace start (s)")
+    ax.set_xlabel("time since earliest trace start (s)")
     ax.set_yticks([])
     if observed_label_used or predicted_label_used:
         ax.legend(loc="upper right")
