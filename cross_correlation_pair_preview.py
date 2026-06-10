@@ -13,6 +13,7 @@ computed trace-by-trace for matching station/channel ids.
 
 from collections import defaultdict
 from pathlib import Path
+import re
 
 import numpy as np
 
@@ -42,20 +43,69 @@ def read_dt_event_pairs(dt_ct_path):
     return pairs
 
 
-def _waveform_path(waveform_dir, event_id, phase):
-    path = Path(waveform_dir) / ("%s_%s.mseed" % (event_id, phase))
+def default_filename_event_id(event_id):
+    """
+    Convert an event id to a filesystem-friendly token.
+
+    If your MiniSEED files use a different convention, pass a custom
+    ``filename_event_id`` function to ``compute_pair_correlations()`` or
+    ``preview_pair_indexes()``.
+    """
+    event_id = str(event_id)
+    event_id = event_id.split("/")[-1]
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", event_id)
+
+
+def read_event_xml_internal_id_map(event_xml):
+    """
+    Reconstruct hypoddpy's internal numeric id -> QuakeML event id mapping.
+
+    hypoddpy assigns internal ids after reading the Catalog and sorting events
+    by origin time. dt.ct uses these internal numeric ids.
+    """
+    from obspy import read_events
+
+    catalog = read_events(str(event_xml))
+    rows = []
+    for event in catalog:
+        origin = event.preferred_origin() or (
+            event.origins[0] if event.origins else None
+        )
+        if origin is None:
+            continue
+        rows.append((origin.time, str(event.resource_id)))
+    rows.sort(key=lambda item: item[0])
+    return {str(index + 1): event_id for index, (_, event_id) in enumerate(rows)}
+
+
+def _resolve_event_id(internal_event_id, id_map=None):
+    if id_map is None:
+        return str(internal_event_id)
+    return str(id_map.get(str(internal_event_id), internal_event_id))
+
+
+def _waveform_path(waveform_dir, event_id, phase, filename_event_id=None):
+    if filename_event_id is None:
+        filename_event_id = default_filename_event_id
+    file_event_id = filename_event_id(event_id)
+    path = Path(waveform_dir) / ("%s_%s.mseed" % (file_event_id, phase))
     if not path.exists():
         raise FileNotFoundError("Waveform file not found: %s" % path)
     return path
 
 
-def read_event_phase_stream(waveform_dir, event_id, phase):
+def read_event_phase_stream(
+    waveform_dir,
+    event_id,
+    phase,
+    filename_event_id=None,
+):
     """
     Read ``eventid_phase.mseed`` with ObsPy and return a Stream.
     """
     from obspy import read
 
-    return read(str(_waveform_path(waveform_dir, event_id, phase)))
+    return read(str(_waveform_path(waveform_dir, event_id, phase, filename_event_id)))
 
 
 def _trace_key(trace):
@@ -145,6 +195,9 @@ def compute_pair_correlations(
     pair_index,
     phase="P",
     max_lag_s=None,
+    event_xml=None,
+    id_map=None,
+    filename_event_id=None,
 ):
     """
     Compute cross-correlation curves for one dt.ct event-pair index.
@@ -156,9 +209,25 @@ def compute_pair_correlations(
             % (pair_index, len(pairs) - 1)
         )
 
-    pair = pairs[pair_index]
-    stream_1 = read_event_phase_stream(waveform_dir, pair["event_id_1"], phase)
-    stream_2 = read_event_phase_stream(waveform_dir, pair["event_id_2"], phase)
+    if id_map is None and event_xml is not None:
+        id_map = read_event_xml_internal_id_map(event_xml)
+
+    pair = dict(pairs[pair_index])
+    pair["catalog_event_id_1"] = _resolve_event_id(pair["event_id_1"], id_map)
+    pair["catalog_event_id_2"] = _resolve_event_id(pair["event_id_2"], id_map)
+
+    stream_1 = read_event_phase_stream(
+        waveform_dir,
+        pair["catalog_event_id_1"],
+        phase,
+        filename_event_id=filename_event_id,
+    )
+    stream_2 = read_event_phase_stream(
+        waveform_dir,
+        pair["catalog_event_id_2"],
+        phase,
+        filename_event_id=filename_event_id,
+    )
     trace_pairs = matching_trace_pairs(stream_1, stream_2)
 
     results = []
@@ -255,7 +324,8 @@ def plot_pair_correlations(
     _plot_stream_with_offsets(
         axes[0],
         [result["trace_1"] for result in results],
-        "Event %s %s waveforms" % (pair["event_id_1"], phase),
+        "Event %s (%s) %s waveforms"
+        % (pair["event_id_1"], pair.get("catalog_event_id_1"), phase),
         max_traces=max_traces,
     )
 
@@ -297,15 +367,18 @@ def plot_pair_correlations(
     _plot_stream_with_offsets(
         axes[2],
         [result["trace_2"] for result in results],
-        "Event %s %s waveforms" % (pair["event_id_2"], phase),
+        "Event %s (%s) %s waveforms"
+        % (pair["event_id_2"], pair.get("catalog_event_id_2"), phase),
         max_traces=max_traces,
     )
 
     if title is None:
-        title = "dt.ct pair %s: event %s vs %s, phase %s" % (
+        title = "dt.ct pair %s: event %s (%s) vs %s (%s), phase %s" % (
             pair["pair_index"],
             pair["event_id_1"],
+            pair.get("catalog_event_id_1"),
             pair["event_id_2"],
+            pair.get("catalog_event_id_2"),
             phase,
         )
     fig.suptitle(title)
@@ -323,6 +396,9 @@ def preview_pair_indexes(
     max_lag_s=None,
     max_traces=20,
     output_dir=None,
+    event_xml=None,
+    id_map=None,
+    filename_event_id=None,
 ):
     """
     Compute and plot several pair indexes.
@@ -334,6 +410,8 @@ def preview_pair_indexes(
     output_dir = Path(output_dir) if output_dir is not None else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
+    if id_map is None and event_xml is not None:
+        id_map = read_event_xml_internal_id_map(event_xml)
 
     for pair_index in pair_indexes:
         result = compute_pair_correlations(
@@ -342,6 +420,8 @@ def preview_pair_indexes(
             pair_index,
             phase=phase,
             max_lag_s=max_lag_s,
+            id_map=id_map,
+            filename_event_id=filename_event_id,
         )
         save_path = None
         if output_dir is not None:
