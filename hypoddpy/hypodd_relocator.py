@@ -1317,6 +1317,105 @@ class HypoDDRelocator(object):
             "%s." % filename
         )
 
+    def prepare_cross_correlation_inputs(
+        self,
+        output_cross_correlation_file=None,
+        force_recompute=False,
+    ):
+        """
+        Run all steps needed to create dt.cc, then stop before HypoDD.
+
+        This is a preflight diagnostic helper for checking whether waveform
+        cross-correlation produced usable observations before running the full
+        relocation.
+
+        :param output_cross_correlation_file: Optional JSON file for raw
+            per-pick-pair cross-correlation results.
+        :param force_recompute: If True, remove an existing dt.cc and cached
+            per-pair cc files in the working directory before recomputing.
+        :returns: A summary dictionary for the generated dt.cc file.
+        """
+        if not self.use_cross_correlation:
+            msg = "use_cross_correlation is False; no dt.cc will be created."
+            raise HypoDDException(msg)
+
+        self.log("Preparing cross-correlation inputs...")
+        self._parse_station_files()
+        self._write_station_input_file()
+        self._read_event_information()
+        self._write_ph2dt_inp_file()
+        self._create_event_id_map()
+        self._write_catalog_input_file()
+        self._compile_hypodd()
+        self._run_ph2dt()
+        self._apply_event_fix_to_event_selection()
+        self._parse_waveform_files()
+
+        dt_cc_path = os.path.join(self.paths["input_files"], "dt.cc")
+        cc_dir = os.path.join(self.paths["working_files"], "cc_files")
+        if force_recompute:
+            if os.path.exists(dt_cc_path):
+                os.remove(dt_cc_path)
+            if os.path.exists(cc_dir):
+                shutil.rmtree(cc_dir)
+
+        self._cross_correlate_picks(outfile=output_cross_correlation_file)
+        summary = self.summarize_dt_cc_file(dt_cc_path)
+        self.log(
+            "dt.cc summary: {data_rows} observations, P={p_count}, "
+            "S={s_count}, mean coefficient={mean_weight}".format(**summary)
+        )
+        if summary["data_rows"] == 0:
+            self.log(
+                "Warning: dt.cc contains no cross-correlation observations.",
+                level="warning",
+            )
+        return summary
+
+    @staticmethod
+    def summarize_dt_cc_file(filename):
+        """
+        Summarize a HypoDD dt.cc file.
+
+        Data rows are expected to contain:
+            station_id differential_time_s cross_correlation_coefficient phase
+        """
+        summary = {
+            "filename": filename,
+            "event_pair_headers": 0,
+            "data_rows": 0,
+            "p_count": 0,
+            "s_count": 0,
+            "min_weight": None,
+            "max_weight": None,
+            "mean_weight": None,
+        }
+        weights = []
+        if not os.path.exists(filename):
+            return summary
+        with open(filename, "r") as open_file:
+            for line in open_file:
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] == "#":
+                    summary["event_pair_headers"] += 1
+                    continue
+                if len(parts) < 4:
+                    continue
+                summary["data_rows"] += 1
+                phase = parts[3].upper()
+                if phase == "P":
+                    summary["p_count"] += 1
+                elif phase == "S":
+                    summary["s_count"] += 1
+                weights.append(float(parts[2]))
+        if weights:
+            summary["min_weight"] = min(weights)
+            summary["max_weight"] = max(weights)
+            summary["mean_weight"] = sum(weights) / len(weights)
+        return summary
+
     def _cross_correlate_picks(self, outfile=None):
         """
         Reads the event pairs matched in dt.ct which are selected by ph2dt and
@@ -1729,9 +1828,9 @@ class HypoDDRelocator(object):
         endtime = starttime + duration
         # Find all possible keys for the station_id.
         if "." in station_id:
-            id_pattern = f"{station_id}.*.*[E,N,Z,1,2,3]"
+            id_pattern = f"{station_id}.*.*"
         else:
-            id_pattern = f"*.{station_id}.*.*[E,N,Z,1,2,3]"
+            id_pattern = f"*.{station_id}.*.*"
         station_keys = [
             _i
             for _i in list(self.waveform_information.keys())
