@@ -162,6 +162,7 @@ class HypoDDRelocator(object):
             "cc_min_allowed_cross_corr_coeff": cc_min_allowed_cross_corr_coeff,
         }
         self.cc_results = {}
+        self.cc_diagnostics = {}
         self.supress_warnings = {"no_matching_trace": supress_warning_traces}
         self.shift_stations = shift_stations
         self.min_elev = 0  # Minimum station elevation (used for shifting)
@@ -1297,6 +1298,14 @@ class HypoDDRelocator(object):
             % filename
         )
 
+    def save_cross_correlation_diagnostics(self, filename):
+        with open(filename, "w") as open_file:
+            json.dump(self.cc_diagnostics, open_file, indent=2, sort_keys=True)
+        self.log(
+            "Successfully saved cross correlation diagnostics to file: %s."
+            % filename
+        )
+
     def load_cross_correlation_results(self, filename, purge=False):
         """
         Load previously computed and saved cross correlation results.
@@ -1320,6 +1329,7 @@ class HypoDDRelocator(object):
     def prepare_cross_correlation_inputs(
         self,
         output_cross_correlation_file=None,
+        output_cross_correlation_diagnostics_file=None,
         force_recompute=False,
     ):
         """
@@ -1331,6 +1341,8 @@ class HypoDDRelocator(object):
 
         :param output_cross_correlation_file: Optional JSON file for raw
             per-pick-pair cross-correlation results.
+        :param output_cross_correlation_diagnostics_file: Optional JSON file
+            with rejection/acceptance counters.
         :param force_recompute: If True, remove an existing dt.cc and cached
             per-pair cc files in the working directory before recomputing.
         :returns: A summary dictionary for the generated dt.cc file.
@@ -1360,7 +1372,12 @@ class HypoDDRelocator(object):
                 shutil.rmtree(cc_dir)
 
         self._cross_correlate_picks(outfile=output_cross_correlation_file)
+        if output_cross_correlation_diagnostics_file:
+            self.save_cross_correlation_diagnostics(
+                output_cross_correlation_diagnostics_file
+            )
         summary = self.summarize_dt_cc_file(dt_cc_path)
+        summary["diagnostics"] = copy.deepcopy(self.cc_diagnostics)
         self.log(
             "dt.cc summary: {data_rows} observations, P={p_count}, "
             "S={s_count}, mean coefficient={mean_weight}".format(**summary)
@@ -1427,6 +1444,28 @@ class HypoDDRelocator(object):
         if os.path.exists(ct_file_path):
             self.log("ct.cc input file already exists")
             return
+        self.cc_diagnostics = {
+            "event_pairs_total": 0,
+            "pick_pairs_considered": 0,
+            "accepted": 0,
+            "rejected": {
+                "no_matching_pick": 0,
+                "no_waveform_files": 0,
+                "preloaded_error": 0,
+                "no_matching_trace_1": 0,
+                "no_matching_trace_2": 0,
+                "multiple_matching_trace_1": 0,
+                "multiple_matching_trace_2": 0,
+                "non_matching_trace_ids": 0,
+                "sampling_rate_mismatch": 0,
+                "xcorr_error": 0,
+                "no_components_correlated": 0,
+                "below_min_cc_coeff": 0,
+            },
+            "accepted_by_phase": {"P": 0, "S": 0},
+            "below_threshold_by_phase": {"P": 0, "S": 0},
+            "coefficients": [],
+        }
         # This is by far the lengthiest operation and will be broken up in
         # smaller steps
         cc_dir = os.path.join(self.paths["working_files"], "cc_files")
@@ -1465,6 +1504,7 @@ class HypoDDRelocator(object):
         pbar_progress = 1
         pbar.start()
         for event_1, event_2 in event_id_pairs:
+            self.cc_diagnostics["event_pairs_total"] += 1
             # Update the progress bar.
             pbar.update(pbar_progress)
             pbar_progress += 1
@@ -1521,7 +1561,9 @@ class HypoDDRelocator(object):
                         break
                 # No corresponding pick could be found.
                 if pick_2 is None:
+                    self.cc_diagnostics["rejected"]["no_matching_pick"] += 1
                     continue
+                self.cc_diagnostics["pick_pairs_considered"] += 1
                 # we got some previously computed information..
                 if pick_2["id"] in self.cc_results.get(pick_1["id"], {}):
                     cc_result = self.cc_results.get(pick_1["id"], {})[
@@ -1535,6 +1577,7 @@ class HypoDDRelocator(object):
                         pick2_corr, cross_corr_coeff = cc_result
                     # .. but it's only an error message or None for a silent skip
                     else:
+                        self.cc_diagnostics["rejected"]["preloaded_error"] += 1
                         self.log(
                             "Skipping pick pair due to error message in preloaded cross correlation result: %s"
                             % str(cc_result)
@@ -1557,6 +1600,7 @@ class HypoDDRelocator(object):
                         )
                     # .. but it's only an error message or None for a silent skip
                     else:
+                        self.cc_diagnostics["rejected"]["preloaded_error"] += 1
                         self.log(
                             "Skipping pick pair due to error message in preloaded cross correlation result: %s"
                             % str(cc_result)
@@ -1579,6 +1623,7 @@ class HypoDDRelocator(object):
                     )
                     # If any pick has no data, skip this pick pair.
                     if data_files_1 is False or data_files_2 is False:
+                        self.cc_diagnostics["rejected"]["no_waveform_files"] += 1
                         continue
                     # Read all files.
                     stream_1 = Stream()
@@ -1654,6 +1699,9 @@ class HypoDDRelocator(object):
                         st_2.merge(-1)
 
                         if len(st_1) > 1:
+                            self.cc_diagnostics["rejected"][
+                                "multiple_matching_trace_1"
+                            ] += 1
                             msg = "More than one {channel} matching trace found for {str(pick_1)}"
                             self.log(msg, level="warning")
                             self.cc_results.setdefault(pick_1["id"], {})[
@@ -1661,6 +1709,9 @@ class HypoDDRelocator(object):
                             ] = msg
                             continue
                         elif len(st_1) == 0:
+                            self.cc_diagnostics["rejected"][
+                                "no_matching_trace_1"
+                            ] += 1
                             msg = f"No matching {channel} trace found for {str(pick_1)}"
                             if not self.supress_warnings["no_matching_trace"]:
                                 self.log(msg, level="warning")
@@ -1671,6 +1722,9 @@ class HypoDDRelocator(object):
                         trace_1 = st_1[0]
 
                         if len(st_2) > 1:
+                            self.cc_diagnostics["rejected"][
+                                "multiple_matching_trace_2"
+                            ] += 1
                             msg = "More than one matching {channel} trace found for{str(pick_2)}"
                             self.log(msg, level="warning")
                             self.cc_results.setdefault(pick_1["id"], {})[
@@ -1678,6 +1732,9 @@ class HypoDDRelocator(object):
                             ] = msg
                             continue
                         elif len(st_2) == 0:
+                            self.cc_diagnostics["rejected"][
+                                "no_matching_trace_2"
+                            ] += 1
                             msg = f"No matching {channel} trace found for {channel}  {str(pick_2)}"
                             if not self.supress_warnings["no_matching_trace"]:
                                 self.log(msg, level="warning")
@@ -1688,6 +1745,9 @@ class HypoDDRelocator(object):
                         trace_2 = st_2[0]
 
                         if trace_1.id != trace_2.id:
+                            self.cc_diagnostics["rejected"][
+                                "non_matching_trace_ids"
+                            ] += 1
                             msg = "Non matching ids during cross correlation. "
                             msg += "(%s and %s)" % (trace_1.id, trace_2.id)
                             self.log(msg, level="warning")
@@ -1699,6 +1759,9 @@ class HypoDDRelocator(object):
                             trace_1.stats.sampling_rate
                             != trace_2.stats.sampling_rate
                         ):
+                            self.cc_diagnostics["rejected"][
+                                "sampling_rate_mismatch"
+                            ] += 1
                             msg = (
                                 "Non matching sampling rates during cross "
                                 "correlation. "
@@ -1744,6 +1807,9 @@ class HypoDDRelocator(object):
                                 # XXX: Maybe maxlag is too short?
                                 # if not err.message.startswith("Less than 3"):
                                 if not str(err).startswith("Less than 3"):
+                                    self.cc_diagnostics["rejected"][
+                                        "xcorr_error"
+                                    ] += 1
                                     msg = "Error during cross correlating: "
                                     msg += str(err)
                                     # msg += err.message
@@ -1756,6 +1822,9 @@ class HypoDDRelocator(object):
                             (pick2_corr, cross_corr_coeff, channel_weight)
                         )
                     if len(all_cross_correlations) == 0:
+                        self.cc_diagnostics["rejected"][
+                            "no_components_correlated"
+                        ] += 1
                         self.cc_results.setdefault(pick_1["id"], {})[
                             pick_2["id"]
                         ] = "No cross correlations performed"
@@ -1782,6 +1851,16 @@ class HypoDDRelocator(object):
                     cross_corr_coeff
                     < self.cc_param["cc_min_allowed_cross_corr_coeff"]
                 ):
+                    self.cc_diagnostics["rejected"]["below_min_cc_coeff"] += 1
+                    self.cc_diagnostics["below_threshold_by_phase"][
+                        pick_1["phase"]
+                    ] = (
+                        self.cc_diagnostics["below_threshold_by_phase"].get(
+                            pick_1["phase"], 0
+                        )
+                        + 1
+                    )
+                    self.cc_diagnostics["coefficients"].append(cross_corr_coeff)
                     continue
                 # Otherwise calculate the corrected differential travel time.
                 diff_travel_time = (
@@ -1798,6 +1877,14 @@ class HypoDDRelocator(object):
                     phase=pick_1["phase"],
                 )
                 current_pair_strings.append(string)
+                self.cc_diagnostics["accepted"] += 1
+                self.cc_diagnostics["accepted_by_phase"][pick_1["phase"]] = (
+                    self.cc_diagnostics["accepted_by_phase"].get(
+                        pick_1["phase"], 0
+                    )
+                    + 1
+                )
+                self.cc_diagnostics["coefficients"].append(cross_corr_coeff)
             # Write the file.
             with open(event_pair_file, "w") as open_file:
                 open_file.write("\n".join(current_pair_strings))
