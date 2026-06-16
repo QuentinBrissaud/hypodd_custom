@@ -1777,6 +1777,7 @@ class HypoDDRelocator(object):
                         # Call the cross correlation function.
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
+                            cc_success = False
                             try:
                                 filter_name = self.cc_param["cc_filter"]
                                 filter_options = None
@@ -1801,9 +1802,10 @@ class HypoDDRelocator(object):
                                     t_after=self.cc_param["cc_time_after"],
                                     cc_maxlag=self.cc_param["cc_maxlag"],
                                     filter=filter_name,
-                                    filter_options=filter_options,
-                                    plot=False,
-                                )
+                                     filter_options=filter_options,
+                                     plot=False,
+                                 )
+                                cc_success = True
                             except Exception as err:
                                 # XXX: Maybe maxlag is too short?
                                 # if not err.message.startswith("Less than 3"):
@@ -1829,6 +1831,14 @@ class HypoDDRelocator(object):
                                         pick_1["id"], {}
                                     )[pick_2["id"]] = msg
                                     continue
+                        if not cc_success:
+                            self.cc_diagnostics["rejected"][
+                                "xcorr_error"
+                            ] += 1
+                            self.cc_results.setdefault(pick_1["id"], {})[
+                                pick_2["id"]
+                            ] = "Cross correlation did not return a result"
+                            continue
                         all_cross_correlations.append(
                             (pick2_corr, cross_corr_coeff, channel_weight)
                         )

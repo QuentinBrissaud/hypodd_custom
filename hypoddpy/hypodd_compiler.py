@@ -573,13 +573,30 @@ c     CODEX LSQR mean-shift constraint patch: equation (9).
         self.hypodd_inc_file = self.create_hypoDD_inc_file()
         # Check the current HypoDD compilation (if any).
         if self.is_current_hypodd_compilation_valid() is True:
-            shutil.rmtree(self.paths["hypodd_unpack_dir"])
+            self._cleanup_unpack_dir()
             self.log("Current compilation is up to date.")
             return
         # Finally compile it.
         self.compile_hypodd()
         # Cleanup.
-        shutil.rmtree(self.paths["hypodd_unpack_dir"])
+        self._cleanup_unpack_dir()
+
+    def _cleanup_unpack_dir(self):
+        """
+        Remove the temporary unpacked HypoDD source tree.
+
+        This directory is only a build scratch area. Some filesystems can leave
+        nested directories behind briefly, so cleanup failures should not abort
+        an otherwise valid relocation run.
+        """
+        try:
+            shutil.rmtree(self.paths["hypodd_unpack_dir"])
+        except OSError as err:
+            self.log(
+                "Warning: Could not fully remove temporary HypoDD source "
+                "directory %s: %s"
+                % (self.paths["hypodd_unpack_dir"], err)
+            )
 
     def create_hypoDD_inc_file(self):
         """
