@@ -1459,6 +1459,7 @@ class HypoDDRelocator(object):
                 "non_matching_trace_ids": 0,
                 "sampling_rate_mismatch": 0,
                 "xcorr_error": 0,
+                "xcorr_too_few_samples": 0,
                 "no_components_correlated": 0,
                 "below_min_cc_coeff": 0,
             },
@@ -1806,7 +1807,17 @@ class HypoDDRelocator(object):
                             except Exception as err:
                                 # XXX: Maybe maxlag is too short?
                                 # if not err.message.startswith("Less than 3"):
-                                if not str(err).startswith("Less than 3"):
+                                if str(err).startswith("Less than 3"):
+                                    self.cc_diagnostics["rejected"][
+                                        "xcorr_too_few_samples"
+                                    ] += 1
+                                    msg = "Error during cross correlating: "
+                                    msg += str(err)
+                                    self.cc_results.setdefault(
+                                        pick_1["id"], {}
+                                    )[pick_2["id"]] = msg
+                                    continue
+                                else:
                                     self.cc_diagnostics["rejected"][
                                         "xcorr_error"
                                     ] += 1
