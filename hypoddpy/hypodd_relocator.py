@@ -1460,6 +1460,7 @@ class HypoDDRelocator(object):
                 "sampling_rate_mismatch": 0,
                 "xcorr_error": 0,
                 "xcorr_too_few_samples": 0,
+                "xcorr_empty_window": 0,
                 "no_components_correlated": 0,
                 "below_min_cc_coeff": 0,
             },
@@ -1615,12 +1616,16 @@ class HypoDDRelocator(object):
                         pick_1["pick_time"] - self.cc_param["cc_time_before"],
                         self.cc_param["cc_time_before"]
                         + self.cc_param["cc_time_after"],
+                        event_id=event_1_dict["event_id"],
+                        phase=pick_1_phase,
                     )
                     data_files_2 = self._find_data(
                         station_id,
                         pick_2["pick_time"] - self.cc_param["cc_time_before"],
                         self.cc_param["cc_time_before"]
                         + self.cc_param["cc_time_after"],
+                        event_id=event_2_dict["event_id"],
+                        phase=pick_1_phase,
                     )
                     # If any pick has no data, skip this pick pair.
                     if data_files_1 is False or data_files_2 is False:
@@ -1703,7 +1708,10 @@ class HypoDDRelocator(object):
                             self.cc_diagnostics["rejected"][
                                 "multiple_matching_trace_1"
                             ] += 1
-                            msg = "More than one {channel} matching trace found for {str(pick_1)}"
+                            msg = (
+                                "More than one %s matching trace found for %s"
+                                % (channel, str(pick_1))
+                            )
                             self.log(msg, level="warning")
                             self.cc_results.setdefault(pick_1["id"], {})[
                                 pick_2["id"]
@@ -1726,7 +1734,10 @@ class HypoDDRelocator(object):
                             self.cc_diagnostics["rejected"][
                                 "multiple_matching_trace_2"
                             ] += 1
-                            msg = "More than one matching {channel} trace found for{str(pick_2)}"
+                            msg = (
+                                "More than one matching %s trace found for %s"
+                                % (channel, str(pick_2))
+                            )
                             self.log(msg, level="warning")
                             self.cc_results.setdefault(pick_1["id"], {})[
                                 pick_2["id"]
@@ -1809,12 +1820,23 @@ class HypoDDRelocator(object):
                             except Exception as err:
                                 # XXX: Maybe maxlag is too short?
                                 # if not err.message.startswith("Less than 3"):
-                                if str(err).startswith("Less than 3"):
+                                err_msg = str(err)
+                                if err_msg.startswith("Less than 3"):
                                     self.cc_diagnostics["rejected"][
                                         "xcorr_too_few_samples"
                                     ] += 1
                                     msg = "Error during cross correlating: "
-                                    msg += str(err)
+                                    msg += err_msg
+                                    self.cc_results.setdefault(
+                                        pick_1["id"], {}
+                                    )[pick_2["id"]] = msg
+                                    continue
+                                elif "empty array" in err_msg.lower():
+                                    self.cc_diagnostics["rejected"][
+                                        "xcorr_empty_window"
+                                    ] += 1
+                                    msg = "Error during cross correlating: "
+                                    msg += err_msg
                                     self.cc_results.setdefault(
                                         pick_1["id"], {}
                                     )[pick_2["id"]] = msg
@@ -1824,7 +1846,7 @@ class HypoDDRelocator(object):
                                         "xcorr_error"
                                     ] += 1
                                     msg = "Error during cross correlating: "
-                                    msg += str(err)
+                                    msg += err_msg
                                     # msg += err.message
                                     self.log(msg, level="error")
                                     self.cc_results.setdefault(
@@ -1922,7 +1944,7 @@ class HypoDDRelocator(object):
         with open(ct_file_path, "w") as open_file:
             open_file.write(final_string)
 
-    def _find_data(self, station_id, starttime, duration):
+    def _find_data(self, station_id, starttime, duration, event_id=None, phase=None):
         """"
         Parses the self.waveform_information dictionary and returns a list of
         filenames containing traces of the seeked information.
@@ -1932,6 +1954,9 @@ class HypoDDRelocator(object):
         :param station_id: Station id in the form network.station
         :param starttime: The minimum starttime of the data.
         :param duration: The minimum duration of the data.
+        :param event_id: Optional event resource id. If waveform files are named
+            like eventid_phase.mseed, matching files are preferred.
+        :param phase: Optional phase label used with event_id filename matching.
         """
         endtime = starttime + duration
         # Find all possible keys for the station_id.
@@ -1954,6 +1979,28 @@ class HypoDDRelocator(object):
                 filenames.append(waveform["filename"])
         if len(filenames) == 0:
             return False
+
+        if event_id is not None and phase is not None:
+            phase = str(phase).upper()
+            event_id = str(event_id)
+            event_id_candidates = [
+                event_id,
+                event_id.rstrip("/").split("/")[-1],
+                event_id.rstrip(":").split(":")[-1],
+            ]
+            preferred_filenames = []
+            for filename in filenames:
+                basename = os.path.basename(filename)
+                stem, _ = os.path.splitext(basename)
+                for candidate in event_id_candidates:
+                    if not candidate:
+                        continue
+                    if stem == "%s_%s" % (candidate, phase):
+                        preferred_filenames.append(filename)
+                        break
+            if len(preferred_filenames) > 0:
+                filenames = preferred_filenames
+
         return list(set(filenames))
 
     def _write_hypoDD_inp_file(self):
