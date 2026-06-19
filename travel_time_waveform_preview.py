@@ -457,3 +457,63 @@ def preview_event_arrivals(
                 )
             )
     return outputs
+
+
+def plot_travel_time_waveform_preview(
+    working_dir,
+    waveform_dir,
+    internal_event_ids,
+    phases=("P", "S"),
+    dataset="final",
+    event_xml=None,
+    filename_event_id=None,
+    max_traces=30,
+    output_dir=None,
+):
+    """
+    Convenience wrapper for plotting observed picks against HypoDD predictions.
+
+    Parameters
+    ----------
+    working_dir
+        HypoDDPy working directory containing ``input_files`` and
+        ``output_files``.
+    waveform_dir
+        Directory containing waveform files named like ``eventid_P.mseed`` and
+        ``eventid_S.mseed``.
+    internal_event_ids
+        HypoDD internal numeric event ids, as strings or integers.
+    phases
+        Phase or phases to plot.
+    dataset
+        ``"initial"`` compares against ``hypoDD.initial.tt`` and
+        ``hypoDD.loc``. ``"final"`` compares against ``hypoDD.final.tt`` and
+        ``hypoDD.reloc``.
+    event_xml
+        Optional QuakeML catalog used to map HypoDD internal ids back to the
+        event ids used in waveform filenames.
+    """
+    working_dir = Path(working_dir)
+    dataset = str(dataset).lower()
+    if dataset == "initial":
+        tt_path = working_dir / "output_files" / "hypoDD.initial.tt"
+        location_path = working_dir / "output_files" / "hypoDD.loc"
+    elif dataset in ("final", "relocated"):
+        tt_path = working_dir / "output_files" / "hypoDD.final.tt"
+        location_path = working_dir / "output_files" / "hypoDD.reloc"
+    else:
+        raise ValueError("dataset must be 'initial' or 'final'")
+
+    phase_dat_path = working_dir / "input_files" / "phase.dat"
+    return preview_event_arrivals(
+        internal_event_ids=internal_event_ids,
+        phases=phases,
+        tt_path=tt_path,
+        phase_dat_path=phase_dat_path,
+        location_path=location_path,
+        waveform_dir=waveform_dir,
+        event_xml=event_xml,
+        filename_event_id=filename_event_id,
+        max_traces=max_traces,
+        output_dir=output_dir,
+    )
