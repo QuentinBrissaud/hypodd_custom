@@ -233,6 +233,23 @@ def _trace_station_id(trace):
     return trace.stats.station
 
 
+def _station_aliases(station_id):
+    station_id = str(station_id)
+    aliases = {station_id}
+    if "." in station_id:
+        aliases.add(station_id.split(".")[-1])
+    return aliases
+
+
+def _arrival_lookup_keys(station_id):
+    aliases = _station_aliases(station_id)
+    keys = set(aliases)
+    for alias in aliases:
+        if "." not in alias:
+            keys.add(alias)
+    return keys
+
+
 def _preprocess_data(trace, demean=True, normalize=True):
     data = np.asarray(trace.data, dtype=np.float64)
     data = data[np.isfinite(data)]
@@ -343,7 +360,8 @@ def event_arrival_rows(
 def _arrival_by_station(rows):
     grouped = defaultdict(list)
     for row in rows:
-        grouped[row["station_id"]].append(row)
+        for key in _station_aliases(row["station_id"]):
+            grouped[key].append(row)
     return grouped
 
 
@@ -412,6 +430,20 @@ def plot_event_waveforms_with_arrivals(
     observed_label_used = False
     uncertainty_label_used = False
     predicted_label_used = False
+    diagnostics = {
+        "event_id": internal_event_id,
+        "catalog_event_id": catalog_event_id,
+        "phase": phase,
+        "arrival_rows": len(arrivals),
+        "trace_count": len(traces),
+        "traces_with_matching_arrivals": 0,
+        "observed_markers_plotted": 0,
+        "predicted_markers_plotted": 0,
+        "observed_markers_outside_window": 0,
+        "predicted_markers_outside_window": 0,
+        "trace_station_ids": [],
+        "arrival_station_ids": sorted({row["station_id"] for row in arrivals}),
+    }
     for index, trace in enumerate(traces):
         data = _preprocess_data(trace)
         if data.size == 0:
@@ -427,7 +459,23 @@ def plot_event_waveforms_with_arrivals(
         ax.plot(time_axis, data + offset, color="black", linewidth=0.8)
 
         station_id = _trace_station_id(trace)
-        for arrival in arrivals_by_station.get(station_id, []):
+        diagnostics["trace_station_ids"].append(station_id)
+        matching_arrivals = []
+        for key in _arrival_lookup_keys(station_id):
+            matching_arrivals.extend(arrivals_by_station.get(key, []))
+        if len(matching_arrivals) > 0:
+            diagnostics["traces_with_matching_arrivals"] += 1
+        seen_arrivals = set()
+        for arrival in matching_arrivals:
+            arrival_key = (
+                arrival["station_id"],
+                arrival["phase"],
+                arrival["observed_pick_time"],
+                arrival["predicted_arrival_time"],
+            )
+            if arrival_key in seen_arrivals:
+                continue
+            seen_arrivals.add(arrival_key)
             observed_x = _seconds_from_trace_start(
                 trace, arrival["observed_pick_time"]
             ) + trace_start_offset
@@ -435,6 +483,7 @@ def plot_event_waveforms_with_arrivals(
                 trace, arrival["predicted_arrival_time"]
             ) + trace_start_offset
             if 0 <= observed_x <= time_axis[-1]:
+                diagnostics["observed_markers_plotted"] += 1
                 uncertainty = arrival.get("pick_time_uncertainty_s")
                 if (
                     show_pick_uncertainty
@@ -481,7 +530,10 @@ def plot_event_waveforms_with_arrivals(
                         ),
                     )
                     observed_label_used = True
+            else:
+                diagnostics["observed_markers_outside_window"] += 1
             if 0 <= predicted_x <= time_axis[-1]:
+                diagnostics["predicted_markers_plotted"] += 1
                 ax.plot(
                     [predicted_x, predicted_x],
                     [offset - 0.55, offset + 0.55],
@@ -495,6 +547,8 @@ def plot_event_waveforms_with_arrivals(
                     ),
                 )
                 predicted_label_used = True
+            else:
+                diagnostics["predicted_markers_outside_window"] += 1
 
         ax.text(
             1.01,
@@ -525,6 +579,7 @@ def plot_event_waveforms_with_arrivals(
         "axes": ax,
         "arrivals": arrivals,
         "catalog_event_id": catalog_event_id,
+        "diagnostics": diagnostics,
     }
 
 
@@ -570,7 +625,7 @@ def preview_event_arrivals(
                     phase_dat_path,
                     location_path,
                     waveform_dir,
-                    event_xml=None,
+                    event_xml=event_xml,
                     id_map=id_map,
                     filename_event_id=filename_event_id,
                     max_traces=max_traces,
