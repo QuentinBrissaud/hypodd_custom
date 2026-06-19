@@ -49,6 +49,53 @@ def read_event_xml_internal_id_map(event_xml):
     return {str(index + 1): event_id for index, (_, event_id) in enumerate(rows)}
 
 
+def read_event_xml_pick_uncertainties(event_xml, id_map=None):
+    """
+    Read pick time uncertainties from QuakeML.
+
+    Returns rows keyed by HypoDD internal event id when ``id_map`` is supplied,
+    otherwise keyed by the QuakeML event resource id.
+    """
+    from obspy import read_events
+
+    catalog = read_events(str(event_xml))
+    reverse_id_map = {}
+    if id_map is not None:
+        reverse_id_map = {str(value): str(key) for key, value in id_map.items()}
+
+    uncertainties = defaultdict(list)
+    for event in catalog:
+        catalog_event_id = str(event.resource_id)
+        event_id = reverse_id_map.get(catalog_event_id, catalog_event_id)
+        for pick in event.picks:
+            waveform_id = pick.waveform_id
+            if waveform_id is None:
+                continue
+            station_code = waveform_id.station_code
+            network_code = waveform_id.network_code
+            if station_code is None:
+                continue
+            if network_code:
+                station_id = "%s.%s" % (network_code, station_code)
+            else:
+                station_id = station_code
+            uncertainty = None
+            if pick.time_errors is not None:
+                uncertainty = pick.time_errors.uncertainty
+            if uncertainty is None:
+                continue
+            phase = (pick.phase_hint or "").upper()
+            uncertainties[str(event_id)].append(
+                {
+                    "station_id": station_id,
+                    "phase": phase,
+                    "pick_time": pick.time,
+                    "uncertainty_s": float(uncertainty),
+                }
+            )
+    return uncertainties
+
+
 def read_phase_dat(path):
     """
     Read hypoddpy/HypoDD phase.dat.
@@ -218,6 +265,34 @@ def _add_seconds(origin_time, seconds):
     return origin_time + timedelta(seconds=float(seconds))
 
 
+def _time_difference_seconds(time_1, time_2):
+    from obspy import UTCDateTime
+
+    return float(UTCDateTime(time_1) - UTCDateTime(time_2))
+
+
+def _attach_pick_uncertainties(arrivals, uncertainty_rows, max_time_difference_s=0.05):
+    for arrival in arrivals:
+        best_row = None
+        best_difference = None
+        for row in uncertainty_rows:
+            if row["station_id"] != arrival["station_id"]:
+                continue
+            if row["phase"] and row["phase"] != arrival["phase"]:
+                continue
+            difference = abs(
+                _time_difference_seconds(row["pick_time"], arrival["observed_pick_time"])
+            )
+            if best_difference is None or difference < best_difference:
+                best_row = row
+                best_difference = difference
+        if best_row is not None and best_difference <= max_time_difference_s:
+            arrival["pick_time_uncertainty_s"] = best_row["uncertainty_s"]
+        else:
+            arrival["pick_time_uncertainty_s"] = None
+    return arrivals
+
+
 def event_arrival_rows(
     internal_event_id,
     phase,
@@ -285,6 +360,7 @@ def plot_event_waveforms_with_arrivals(
     max_traces=30,
     title=None,
     save_path=None,
+    show_pick_uncertainty=True,
 ):
     """
     Plot one event/phase waveform file with observed and predicted arrivals.
@@ -312,6 +388,11 @@ def plot_event_waveforms_with_arrivals(
         locations,
         travel_times,
     )
+    if show_pick_uncertainty and event_xml is not None:
+        uncertainty_rows = read_event_xml_pick_uncertainties(event_xml, id_map)
+        arrivals = _attach_pick_uncertainties(
+            arrivals, uncertainty_rows.get(internal_event_id, [])
+        )
     arrivals_by_station = _arrival_by_station(arrivals)
 
     stream = read_event_phase_stream(
@@ -329,6 +410,7 @@ def plot_event_waveforms_with_arrivals(
     fig, ax = plt.subplots(figsize=(11, max(4, 0.35 * len(traces) + 2)))
     offset_step = 1.4
     observed_label_used = False
+    uncertainty_label_used = False
     predicted_label_used = False
     for index, trace in enumerate(traces):
         data = _preprocess_data(trace)
@@ -353,14 +435,52 @@ def plot_event_waveforms_with_arrivals(
                 trace, arrival["predicted_arrival_time"]
             ) + trace_start_offset
             if 0 <= observed_x <= time_axis[-1]:
-                ax.plot(
-                    [observed_x, observed_x],
-                    [offset - 0.55, offset + 0.55],
-                    color="tab:blue",
-                    linewidth=1.1,
-                    label="observed pick" if not observed_label_used else None,
-                )
-                observed_label_used = True
+                uncertainty = arrival.get("pick_time_uncertainty_s")
+                if (
+                    show_pick_uncertainty
+                    and uncertainty is not None
+                    and uncertainty > 0
+                ):
+                    sigma = float(uncertainty)
+                    gaussian_x = np.linspace(
+                        observed_x - 3.0 * sigma,
+                        observed_x + 3.0 * sigma,
+                        80,
+                    )
+                    gaussian = np.exp(
+                        -0.5 * ((gaussian_x - observed_x) / sigma) ** 2
+                    )
+                    gaussian_y = offset + 0.55 * gaussian
+                    ax.plot(
+                        gaussian_x,
+                        gaussian_y,
+                        color="tab:blue",
+                        linewidth=1.1,
+                        label=(
+                            "observed pick uncertainty"
+                            if not uncertainty_label_used
+                            else None
+                        ),
+                    )
+                    ax.fill_between(
+                        gaussian_x,
+                        offset,
+                        gaussian_y,
+                        color="tab:blue",
+                        alpha=0.18,
+                    )
+                    uncertainty_label_used = True
+                else:
+                    ax.plot(
+                        [observed_x, observed_x],
+                        [offset - 0.55, offset + 0.55],
+                        color="tab:blue",
+                        linewidth=1.1,
+                        label=(
+                            "observed pick" if not observed_label_used else None
+                        ),
+                    )
+                    observed_label_used = True
             if 0 <= predicted_x <= time_axis[-1]:
                 ax.plot(
                     [predicted_x, predicted_x],
@@ -420,6 +540,7 @@ def preview_event_arrivals(
     filename_event_id=None,
     max_traces=30,
     output_dir=None,
+    show_pick_uncertainty=True,
 ):
     """
     Plot several events/phases with observed and predicted arrival markers.
@@ -454,6 +575,7 @@ def preview_event_arrivals(
                     filename_event_id=filename_event_id,
                     max_traces=max_traces,
                     save_path=save_path,
+                    show_pick_uncertainty=show_pick_uncertainty,
                 )
             )
     return outputs
@@ -469,6 +591,7 @@ def plot_travel_time_waveform_preview(
     filename_event_id=None,
     max_traces=30,
     output_dir=None,
+    show_pick_uncertainty=True,
 ):
     """
     Convenience wrapper for plotting observed picks against HypoDD predictions.
@@ -516,4 +639,5 @@ def plot_travel_time_waveform_preview(
         filename_event_id=filename_event_id,
         max_traces=max_traces,
         output_dir=output_dir,
+        show_pick_uncertainty=show_pick_uncertainty,
     )
