@@ -352,8 +352,9 @@ def read_hypodd_locations(path):
 
 
 def _hypodd_executable(working_dir, hypodd_binary=None):
+    working_dir = Path(working_dir).resolve()
     if hypodd_binary is not None:
-        hypodd_binary = Path(hypodd_binary)
+        hypodd_binary = Path(hypodd_binary).resolve()
         if hypodd_binary.exists():
             return hypodd_binary
         raise FileNotFoundError("Explicit hypoDD binary not found: %s" % hypodd_binary)
@@ -367,15 +368,17 @@ def _hypodd_executable(working_dir, hypodd_binary=None):
         Path("hypoDD.exe"),
     ]
     for candidate in candidates:
+        candidate = candidate.resolve()
         if candidate.exists():
             return candidate
     resolved = shutil.which("hypoDD") or shutil.which("hypoDD.exe")
     if resolved:
         return Path(resolved)
     raise FileNotFoundError(
-        "Could not find compiled hypoDD binary. Looked in %s/bin, %s, "
-        "the current directory, and PATH. Pass hypodd_binary='...' if the "
-        "binary is somewhere else." % (working_dir, working_dir)
+        "Could not find compiled hypoDD binary. Checked: %s. "
+        "Also checked PATH. Pass hypodd_binary='...' if the binary is "
+        "somewhere else."
+        % ", ".join(str(candidate.resolve()) for candidate in candidates)
     )
 
 
@@ -433,8 +436,8 @@ def run_hypodd_trial(
     """
     Run HypoDD once in ``trial_dir`` using files already copied there.
     """
-    base_working_dir = Path(base_working_dir)
-    trial_dir = Path(trial_dir)
+    base_working_dir = Path(base_working_dir).resolve()
+    trial_dir = Path(trial_dir).resolve()
     hypodd_path = _hypodd_executable(base_working_dir, hypodd_binary=hypodd_binary)
     input_dir = _resolve_input_dir(base_working_dir)
     if use_cross_correlation is None:
@@ -622,12 +625,12 @@ def run_residual_bootstrap(
             "keep_trial_files must be one of 'all', 'first', 'failed', or 'none'."
         )
 
-    working_dir = Path(working_dir)
+    working_dir = Path(working_dir).resolve()
     input_dir = _resolve_input_dir(working_dir)
     output_files = _resolve_output_dir(working_dir)
     if output_dir is None:
         output_dir = working_dir / "bootstrap"
-    output_dir = Path(output_dir)
+    output_dir = Path(output_dir).resolve()
     if output_dir.exists() and overwrite:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
