@@ -351,14 +351,8 @@ def read_hypodd_locations(path):
     return rows
 
 
-def _hypodd_executable(working_dir, hypodd_binary=None):
+def _hypodd_executable(working_dir):
     working_dir = Path(working_dir).resolve()
-    if hypodd_binary is not None:
-        hypodd_binary = Path(hypodd_binary).resolve()
-        if hypodd_binary.exists():
-            return hypodd_binary
-        raise FileNotFoundError("Explicit hypoDD binary not found: %s" % hypodd_binary)
-
     candidates = [
         Path(working_dir) / "bin" / "hypoDD",
         Path(working_dir) / "bin" / "hypoDD.exe",
@@ -376,8 +370,7 @@ def _hypodd_executable(working_dir, hypodd_binary=None):
         return Path(resolved)
     raise FileNotFoundError(
         "Could not find compiled hypoDD binary. Checked: %s. "
-        "Also checked PATH. Pass hypodd_binary='...' if the binary is "
-        "somewhere else."
+        "Also checked PATH."
         % ", ".join(str(candidate.resolve()) for candidate in candidates)
     )
 
@@ -431,14 +424,13 @@ def run_hypodd_trial(
     base_working_dir,
     trial_dir,
     use_cross_correlation=None,
-    hypodd_binary=None,
 ):
     """
     Run HypoDD once in ``trial_dir`` using files already copied there.
     """
     base_working_dir = Path(base_working_dir).resolve()
     trial_dir = Path(trial_dir).resolve()
-    hypodd_path = _hypodd_executable(base_working_dir, hypodd_binary=hypodd_binary)
+    hypodd_path = _hypodd_executable(base_working_dir)
     input_dir = _resolve_input_dir(base_working_dir)
     if use_cross_correlation is None:
         use_cross_correlation = (input_dir / "dt.cc").exists()
@@ -552,7 +544,6 @@ def run_residual_bootstrap(
     overwrite=False,
     use_cross_correlation=None,
     keep_trial_files="first",
-    hypodd_binary=None,
     **kwargs,
 ):
     """
@@ -577,9 +568,6 @@ def run_residual_bootstrap(
         Remove an existing output directory before running.
     use_cross_correlation
         Whether HypoDD should require/use dt.cc. Defaults to whether dt.cc exists.
-    hypodd_binary
-        Optional path to a compiled ``hypoDD`` executable. Use this when the
-        completed working directory does not contain ``bin/hypoDD``.
     keep_trial_files
         Controls how much per-trial data is kept on disk:
 
@@ -685,7 +673,6 @@ def run_residual_bootstrap(
                 working_dir,
                 trial_dir,
                 use_cross_correlation=use_cross_correlation,
-                hypodd_binary=hypodd_binary,
             )
             trial_reloc_path = trial_dir / "hypoDD.reloc"
             locations = read_hypodd_locations(trial_reloc_path)
@@ -750,7 +737,6 @@ def run_residual_bootstrap(
         "include_ct": include_ct,
         "include_cc": include_cc,
         "use_cross_correlation": use_cross_correlation,
-        "hypodd_binary": str(hypodd_binary) if hypodd_binary is not None else "",
         "keep_unmatched": keep_unmatched,
         "keep_trial_files": keep_trial_files,
         "reference_location_count": len(reference_locations),
@@ -820,11 +806,6 @@ if __name__ == "__main__":
     parser.add_argument("--drop-unmatched", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
-        "--hypodd-binary",
-        default=None,
-        help="Path to compiled hypoDD executable if not in working_dir/bin or PATH.",
-    )
-    parser.add_argument(
         "--keep-trial-files",
         choices=["all", "first", "failed", "none"],
         default="first",
@@ -845,6 +826,5 @@ if __name__ == "__main__":
         keep_unmatched=not args.drop_unmatched,
         overwrite=args.overwrite,
         keep_trial_files=args.keep_trial_files,
-        hypodd_binary=args.hypodd_binary,
     )
     print(json.dumps(result["metadata"], indent=2))
