@@ -370,6 +370,30 @@ def _copy_if_exists(source, destination):
     return False
 
 
+def _resolve_input_dir(working_dir):
+    working_dir = Path(working_dir)
+    candidates = [working_dir / "input_files", working_dir]
+    for candidate in candidates:
+        if (candidate / "dt.ct").exists() and (candidate / "hypoDD.inp").exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find dt.ct and hypoDD.inp in %s/input_files or %s"
+        % (working_dir, working_dir)
+    )
+
+
+def _resolve_output_dir(working_dir):
+    working_dir = Path(working_dir)
+    candidates = [working_dir / "output_files", working_dir]
+    for candidate in candidates:
+        if (candidate / "hypoDD.reloc").exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find hypoDD.reloc in %s/output_files or %s"
+        % (working_dir, working_dir)
+    )
+
+
 def _write_trial_hypodd_input(source, destination, use_cross_correlation):
     """
     Copy hypoDD.inp and optionally force IDAT to 2 or 3.
@@ -390,7 +414,7 @@ def run_hypodd_trial(base_working_dir, trial_dir, use_cross_correlation=None):
     base_working_dir = Path(base_working_dir)
     trial_dir = Path(trial_dir)
     hypodd_path = _hypodd_executable(base_working_dir)
-    input_dir = base_working_dir / "input_files"
+    input_dir = _resolve_input_dir(base_working_dir)
     if use_cross_correlation is None:
         use_cross_correlation = (input_dir / "dt.cc").exists()
 
@@ -573,10 +597,8 @@ def run_residual_bootstrap(
         )
 
     working_dir = Path(working_dir)
-    input_dir = working_dir / "input_files"
-    output_files = working_dir / "output_files"
-    if not output_files.exists():
-        output_files = working_dir
+    input_dir = _resolve_input_dir(working_dir)
+    output_files = _resolve_output_dir(working_dir)
     if output_dir is None:
         output_dir = working_dir / "bootstrap"
     output_dir = Path(output_dir)
@@ -723,6 +745,30 @@ def run_residual_bootstrap(
         json.dumps(trial_status, indent=2), encoding="utf-8"
     )
     _write_csv(output_dir / "bootstrap_location_uncertainty.csv", location_summary)
+    if not location_summary:
+        diagnostic_rows = [
+            {
+                "reason": (
+                    "No event had at least one successful bootstrap location "
+                    "matching the reference relocation."
+                ),
+                "reference_location_count": len(reference_locations),
+                "unique_trial_location_count": len(trial_event_ids),
+                "reference_trial_overlap_event_count": len(overlap_event_ids),
+                "n_trials_successful": len(trial_location_paths),
+                "successful_trial_location_count_min": (
+                    min(successful_location_counts)
+                    if successful_location_counts
+                    else 0
+                ),
+                "successful_trial_location_count_max": (
+                    max(successful_location_counts)
+                    if successful_location_counts
+                    else 0
+                ),
+            }
+        ]
+        _write_csv(output_dir / "bootstrap_empty_summary_diagnostic.csv", diagnostic_rows)
     return {
         "metadata": metadata,
         "trial_status": trial_status,
