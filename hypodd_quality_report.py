@@ -847,6 +847,18 @@ def parse_hypodd_log(path):
                     current = None
                     summary_mode = None
                 continue
+    block = 1
+    previous_iteration = None
+    for row in rows:
+        current_iteration = row.get("global_iteration")
+        if (
+            previous_iteration is not None
+            and current_iteration is not None
+            and current_iteration <= previous_iteration
+        ):
+            block += 1
+        row["convergence_block"] = block
+        previous_iteration = current_iteration
     return rows
 
 
@@ -1486,35 +1498,60 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
 
     if convergence_rows:
         plt.figure()
-        x = [row["global_iteration"] for row in convergence_rows]
-        if any(math.isfinite(row.get("initial_weighted_ct_rms_s", math.nan)) for row in convergence_rows):
-            plt.plot(
-                x,
-                [row.get("initial_weighted_ct_rms_s", math.nan) for row in convergence_rows],
-                label="Initial RMSCT",
-            )
-        if any(math.isfinite(row.get("post_weighted_ct_rms_s", math.nan)) for row in convergence_rows):
-            plt.plot(
-                x,
-                [row.get("post_weighted_ct_rms_s", math.nan) for row in convergence_rows],
-                label="Post-solve RMSCT",
-            )
-        elif any(math.isfinite(row.get("rms_ct_s", math.nan)) for row in convergence_rows):
-            plt.plot(x, [row.get("rms_ct_s", math.nan) for row in convergence_rows], label="RMSCT")
-        if any(math.isfinite(row.get("initial_weighted_cc_rms_s", math.nan)) for row in convergence_rows):
-            plt.plot(
-                x,
-                [row.get("initial_weighted_cc_rms_s", math.nan) for row in convergence_rows],
-                label="Initial RMSCC",
-            )
-        if any(math.isfinite(row.get("post_weighted_cc_rms_s", math.nan)) for row in convergence_rows):
-            plt.plot(
-                x,
-                [row.get("post_weighted_cc_rms_s", math.nan) for row in convergence_rows],
-                label="Post-solve RMSCC",
-            )
-        elif any(math.isfinite(row.get("rms_cc_s", math.nan)) for row in convergence_rows):
-            plt.plot(x, [row.get("rms_cc_s", math.nan) for row in convergence_rows], label="RMSCC")
+        def plot_segmented_series(value_key, label, color=None):
+            blocks = defaultdict(list)
+            for row in convergence_rows:
+                x_value = row.get("global_iteration")
+                y_value = row.get(value_key, math.nan)
+                if x_value is None or not math.isfinite(y_value):
+                    continue
+                blocks[row.get("convergence_block", 1)].append((x_value, y_value))
+            if not blocks:
+                return False
+            label_used = False
+            for _, points in sorted(blocks.items()):
+                if not points:
+                    continue
+                x_values = [point[0] for point in points]
+                y_values = [point[1] for point in points]
+                plt.plot(
+                    x_values,
+                    y_values,
+                    marker="o",
+                    markersize=3,
+                    linewidth=1.0 if len(points) > 1 else 0.0,
+                    alpha=0.85,
+                    color=color,
+                    label=label if not label_used else None,
+                )
+                label_used = True
+            return True
+
+        plot_segmented_series(
+            "initial_weighted_ct_rms_s",
+            "Initial RMSCT",
+            color="tab:orange",
+        )
+        has_post_ct = plot_segmented_series(
+            "post_weighted_ct_rms_s",
+            "Post-solve RMSCT",
+            color="tab:red",
+        )
+        if not has_post_ct:
+            plot_segmented_series("rms_ct_s", "RMSCT", color="tab:red")
+
+        plot_segmented_series(
+            "initial_weighted_cc_rms_s",
+            "Initial RMSCC",
+            color="tab:blue",
+        )
+        has_post_cc = plot_segmented_series(
+            "post_weighted_cc_rms_s",
+            "Post-solve RMSCC",
+            color="tab:green",
+        )
+        if not has_post_cc:
+            plot_segmented_series("rms_cc_s", "RMSCC", color="tab:green")
         plt.xlabel("iteration")
         plt.ylabel("weighted RMS (s)")
         plt.title("HypoDD Residual Convergence")
