@@ -22,6 +22,7 @@ Typical use:
 """
 
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 import csv
 import json
@@ -58,6 +59,32 @@ def _format_float(value, precision=6):
     if text in ("-0", ""):
         text = "0"
     return text
+
+
+def _hypodd_time(parts, first_index):
+    year = int(parts[first_index])
+    month = int(parts[first_index + 1])
+    day = int(parts[first_index + 2])
+    hour = int(parts[first_index + 3])
+    minute = int(parts[first_index + 4])
+    second = float(parts[first_index + 5])
+    whole_second = int(second)
+    microsecond = int(round((second - whole_second) * 1_000_000))
+    if whole_second >= 60:
+        minute += 1
+        whole_second -= 60
+    return datetime(year, month, day, hour, minute, whole_second, microsecond)
+
+
+def _local_offsets_km(reference, location):
+    mean_lat = math.radians((reference["latitude"] + location["latitude"]) / 2.0)
+    dx = (
+        (location["longitude"] - reference["longitude"])
+        * 111.32
+        * math.cos(mean_lat)
+    )
+    dy = (location["latitude"] - reference["latitude"]) * 111.32
+    return dx, dy
 
 
 def _observed_dd(row):
@@ -307,17 +334,20 @@ def read_hypodd_locations(path):
             if len(parts) < 17:
                 continue
             event_id = int(float(parts[0]))
-            rows[event_id] = {
+            row = {
                 "event_id": event_id,
                 "latitude": float(parts[1]),
                 "longitude": float(parts[2]),
                 "depth_km": float(parts[3]),
-                "x_km": float(parts[4]),
-                "y_km": float(parts[5]),
-                "z_km": float(parts[6]),
-                "time_s": float(parts[7]),
+                "time": _hypodd_time(parts, 10),
                 "cluster_id": int(float(parts[23])) if len(parts) > 23 else None,
             }
+            if len(parts) > 7:
+                row["raw_col_4"] = _float(parts[4])
+                row["raw_col_5"] = _float(parts[5])
+                row["raw_col_6"] = _float(parts[6])
+                row["raw_col_7"] = _float(parts[7])
+            rows[event_id] = row
     return rows
 
 
@@ -340,6 +370,19 @@ def _copy_if_exists(source, destination):
     return False
 
 
+def _write_trial_hypodd_input(source, destination, use_cross_correlation):
+    """
+    Copy hypoDD.inp and optionally force IDAT to 2 or 3.
+    """
+    lines = Path(source).read_text(encoding="utf-8", errors="replace").splitlines()
+    if use_cross_correlation is not None and len(lines) > 10:
+        parts = lines[10].split()
+        if len(parts) >= 3:
+            parts[0] = "3" if use_cross_correlation else "2"
+            lines[10] = " ".join(parts)
+    Path(destination).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_hypodd_trial(base_working_dir, trial_dir, use_cross_correlation=None):
     """
     Run HypoDD once in ``trial_dir`` using files already copied there.
@@ -348,12 +391,17 @@ def run_hypodd_trial(base_working_dir, trial_dir, use_cross_correlation=None):
     trial_dir = Path(trial_dir)
     hypodd_path = _hypodd_executable(base_working_dir)
     input_dir = base_working_dir / "input_files"
-
-    for filename in ["event.sel", "station.sel", "hypoDD.inp"]:
-        shutil.copyfile(input_dir / filename, trial_dir / filename)
-
     if use_cross_correlation is None:
         use_cross_correlation = (input_dir / "dt.cc").exists()
+
+    for filename in ["event.sel", "station.sel"]:
+        shutil.copyfile(input_dir / filename, trial_dir / filename)
+    _write_trial_hypodd_input(
+        input_dir / "hypoDD.inp",
+        trial_dir / "hypoDD.inp",
+        use_cross_correlation,
+    )
+
     if use_cross_correlation and not (trial_dir / "dt.cc").exists():
         _copy_if_exists(input_dir / "dt.cc", trial_dir / "dt.cc")
 
@@ -394,10 +442,15 @@ def summarize_bootstrap_location_sets(reference_locations, trial_locations):
             reference = reference_locations.get(event_id)
             if reference is None:
                 continue
-            values[event_id]["dx_km"].append(location["x_km"] - reference["x_km"])
-            values[event_id]["dy_km"].append(location["y_km"] - reference["y_km"])
-            values[event_id]["dz_km"].append(location["z_km"] - reference["z_km"])
-            values[event_id]["dt_s"].append(location["time_s"] - reference["time_s"])
+            dx_km, dy_km = _local_offsets_km(reference, location)
+            values[event_id]["dx_km"].append(dx_km)
+            values[event_id]["dy_km"].append(dy_km)
+            values[event_id]["dz_km"].append(
+                location["depth_km"] - reference["depth_km"]
+            )
+            values[event_id]["dt_s"].append(
+                (location["time"] - reference["time"]).total_seconds()
+            )
 
     summary = []
     for event_id, columns in sorted(values.items()):
@@ -536,6 +589,8 @@ def run_residual_bootstrap(
         blocks_by_type["ct"] = read_dt_file(input_dir / "dt.ct", file_type="ct")
     if include_cc and (input_dir / "dt.cc").exists():
         blocks_by_type["cc"] = read_dt_file(input_dir / "dt.cc", file_type="cc")
+    if use_cross_correlation is None:
+        use_cross_correlation = bool(include_cc and "cc" in blocks_by_type)
 
     residual_path = output_files / "hypoDD.final.res"
     residual_rows = read_hypodd_final_residuals(residual_path)
@@ -567,12 +622,12 @@ def run_residual_bootstrap(
             else:
                 _copy_if_exists(input_dir / "dt.ct", trial_dir / "dt.ct")
 
-            if "cc" in blocks_by_type and (include_cc or use_cross_correlation):
+            if "cc" in blocks_by_type and use_cross_correlation:
                 trial_cc = create_bootstrap_blocks(
                     blocks_by_type["cc"], pools, rng, keep_unmatched=keep_unmatched
                 )
                 write_dt_file(trial_cc, trial_dir / "dt.cc")
-            elif (input_dir / "dt.cc").exists():
+            elif use_cross_correlation and (input_dir / "dt.cc").exists():
                 _copy_if_exists(input_dir / "dt.cc", trial_dir / "dt.cc")
 
             run_hypodd_trial(
@@ -581,13 +636,15 @@ def run_residual_bootstrap(
                 use_cross_correlation=use_cross_correlation,
             )
             trial_reloc_path = trial_dir / "hypoDD.reloc"
-            trial_locations.append(read_hypodd_locations(trial_reloc_path))
+            locations = read_hypodd_locations(trial_reloc_path)
+            trial_locations.append(locations)
             trial_location_paths.append(trial_reloc_path)
             trial_status.append(
                 {
                     "trial": trial_index,
                     "status": "success",
                     "trial_dir": str(trial_dir),
+                    "location_count": len(locations),
                     "error": "",
                 }
             )
@@ -608,6 +665,7 @@ def run_residual_bootstrap(
                     "trial": trial_index,
                     "status": "failed",
                     "trial_dir": str(trial_dir),
+                    "location_count": 0,
                     "error": "%s: %s" % (exc.__class__.__name__, exc),
                 }
             )
@@ -618,6 +676,18 @@ def run_residual_bootstrap(
     location_summary = summarize_bootstrap_location_sets(
         reference_locations, trial_locations
     )
+    reference_event_ids = set(reference_locations)
+    trial_event_ids = set()
+    overlap_event_ids = set()
+    for locations in trial_locations:
+        current_event_ids = set(locations)
+        trial_event_ids.update(current_event_ids)
+        overlap_event_ids.update(reference_event_ids.intersection(current_event_ids))
+    successful_location_counts = [
+        row.get("location_count", 0)
+        for row in trial_status
+        if row.get("status") == "success"
+    ]
 
     metadata = {
         "working_dir": str(working_dir),
@@ -627,8 +697,19 @@ def run_residual_bootstrap(
         "random_seed": random_seed,
         "include_ct": include_ct,
         "include_cc": include_cc,
+        "use_cross_correlation": use_cross_correlation,
         "keep_unmatched": keep_unmatched,
         "keep_trial_files": keep_trial_files,
+        "reference_location_count": len(reference_locations),
+        "unique_trial_location_count": len(trial_event_ids),
+        "reference_trial_overlap_event_count": len(overlap_event_ids),
+        "successful_trial_location_count_min": (
+            min(successful_location_counts) if successful_location_counts else 0
+        ),
+        "successful_trial_location_count_max": (
+            max(successful_location_counts) if successful_location_counts else 0
+        ),
+        "location_summary_event_count": len(location_summary),
         "match_summary": match_summary,
         "residual_pool_sizes": {
             "%s_%s" % (key[0], key[1]): len(value)

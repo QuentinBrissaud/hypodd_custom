@@ -1498,63 +1498,117 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
 
     if convergence_rows:
         plt.figure()
-        def plot_segmented_series(value_key, label, color=None):
-            blocks = defaultdict(list)
+        def has_positive_series(key):
+            return any(
+                math.isfinite(row.get(key, math.nan)) and row.get(key, 0.0) > 0
+                for row in convergence_rows
+            )
+
+        has_cc_data = (
+            has_positive_series("cc_percent")
+            or has_positive_series("initial_weighted_cc_rms_s")
+            or has_positive_series("post_weighted_cc_rms_s")
+        )
+
+        def _percentile(sorted_values, fraction):
+            if not sorted_values:
+                return math.nan
+            if len(sorted_values) == 1:
+                return sorted_values[0]
+            position = fraction * (len(sorted_values) - 1)
+            lower = int(math.floor(position))
+            upper = int(math.ceil(position))
+            if lower == upper:
+                return sorted_values[lower]
+            weight = position - lower
+            return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+        def plot_iteration_summary(
+            value_key,
+            label,
+            color=None,
+            marker="o",
+            linestyle="-",
+            alpha=0.9,
+            show_band=True,
+        ):
+            groups = defaultdict(list)
             for row in convergence_rows:
-                x_value = row.get("global_iteration")
+                x_value = row.get("iteration", row.get("table_iteration"))
                 y_value = row.get(value_key, math.nan)
                 if x_value is None or not math.isfinite(y_value):
                     continue
-                blocks[row.get("convergence_block", 1)].append((x_value, y_value))
-            if not blocks:
+                groups[int(x_value)].append(y_value)
+            if not groups:
                 return False
-            label_used = False
-            for _, points in sorted(blocks.items()):
-                if not points:
-                    continue
-                x_values = [point[0] for point in points]
-                y_values = [point[1] for point in points]
-                plt.plot(
+            x_values = sorted(groups)
+            medians = []
+            q25 = []
+            q75 = []
+            for x_value in x_values:
+                vals = sorted(groups[x_value])
+                medians.append(_percentile(vals, 0.50))
+                q25.append(_percentile(vals, 0.25))
+                q75.append(_percentile(vals, 0.75))
+            if show_band and any(len(groups[x_value]) > 1 for x_value in x_values):
+                plt.fill_between(
                     x_values,
-                    y_values,
-                    marker="o",
-                    markersize=3,
-                    linewidth=1.0 if len(points) > 1 else 0.0,
-                    alpha=0.85,
+                    q25,
+                    q75,
                     color=color,
-                    label=label if not label_used else None,
+                    alpha=0.15,
+                    linewidth=0,
                 )
-                label_used = True
+            plt.plot(
+                x_values,
+                medians,
+                marker=marker,
+                markersize=3,
+                linewidth=1.2 if linestyle != "None" else 0.0,
+                linestyle=linestyle,
+                alpha=alpha,
+                color=color,
+                label=label,
+            )
             return True
 
-        plot_segmented_series(
+        plot_iteration_summary(
             "initial_weighted_ct_rms_s",
-            "Initial RMSCT",
+            "Initial RMSCT median",
             color="tab:orange",
+            linestyle="None",
+            alpha=0.55,
+            show_band=False,
         )
-        has_post_ct = plot_segmented_series(
+        has_post_ct = plot_iteration_summary(
             "post_weighted_ct_rms_s",
-            "Post-solve RMSCT",
+            "Post-solve RMSCT median",
             color="tab:red",
         )
         if not has_post_ct:
-            plot_segmented_series("rms_ct_s", "RMSCT", color="tab:red")
+            plot_iteration_summary("rms_ct_s", "RMSCT median", color="tab:red")
 
-        plot_segmented_series(
-            "initial_weighted_cc_rms_s",
-            "Initial RMSCC",
-            color="tab:blue",
-        )
-        has_post_cc = plot_segmented_series(
-            "post_weighted_cc_rms_s",
-            "Post-solve RMSCC",
-            color="tab:green",
-        )
-        if not has_post_cc:
-            plot_segmented_series("rms_cc_s", "RMSCC", color="tab:green")
+        if has_cc_data:
+            plot_iteration_summary(
+                "initial_weighted_cc_rms_s",
+                "Initial RMSCC median",
+                color="tab:blue",
+                linestyle="None",
+                alpha=0.55,
+                show_band=False,
+            )
+            has_post_cc = plot_iteration_summary(
+                "post_weighted_cc_rms_s",
+                "Post-solve RMSCC median",
+                color="tab:green",
+            )
+            if not has_post_cc:
+                plot_iteration_summary(
+                    "rms_cc_s", "RMSCC median", color="tab:green"
+                )
         plt.xlabel("iteration")
         plt.ylabel("weighted RMS (s)")
-        plt.title("HypoDD Residual Convergence")
+        plt.title("HypoDD Residual Convergence (Median Across Blocks)")
         plt.legend()
         save_current("convergence_rms.png")
 
@@ -1870,6 +1924,166 @@ def make_ukraine_cartopy_plot(output_dir, original, relocated, stations):
     return plot_paths
 
 
+def read_bootstrap_uncertainties(path):
+    rows = {}
+    path = Path(path)
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if not row.get("event_id"):
+                continue
+            event_id = int(float(row["event_id"]))
+            parsed = {"event_id": event_id}
+            for key, value in row.items():
+                if key == "event_id":
+                    continue
+                parsed[key] = _float(value) if value not in ("", None) else math.nan
+            rows[event_id] = parsed
+    return rows
+
+
+def make_bootstrap_uncertainty_plot(
+    output_dir,
+    relocated,
+    stations,
+    bootstrap_uncertainties,
+):
+    """
+    Plot relocated events colored by bootstrap horizontal uncertainty.
+    """
+    if not bootstrap_uncertainties:
+        return []
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return []
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "bootstrap_horizontal_uncertainty_map.png"
+
+    rows = []
+    for event_id, uncertainty in bootstrap_uncertainties.items():
+        event = relocated.get(event_id)
+        if event is None:
+            continue
+        horizontal = uncertainty.get("horizontal_shift_km_p95", math.nan)
+        if not math.isfinite(horizontal):
+            dx_std = uncertainty.get("dx_km_std", math.nan)
+            dy_std = uncertainty.get("dy_km_std", math.nan)
+            if math.isfinite(dx_std) and math.isfinite(dy_std):
+                horizontal = math.hypot(dx_std, dy_std)
+        if not math.isfinite(horizontal):
+            continue
+        rows.append(
+            {
+                "event_id": event_id,
+                "latitude": event["latitude"],
+                "longitude": event["longitude"],
+                "horizontal_uncertainty_km": horizontal,
+                "cluster_id": event.get("cluster_id", ""),
+            }
+        )
+    if not rows:
+        return []
+
+    all_lats = [row["latitude"] for row in rows] + [
+        station["latitude"] for station in stations.values()
+    ]
+    all_lons = [row["longitude"] for row in rows] + [
+        station["longitude"] for station in stations.values()
+    ]
+    lat_pad = max(0.02, (max(all_lats) - min(all_lats)) * 0.12)
+    lon_pad = max(0.02, (max(all_lons) - min(all_lons)) * 0.12)
+
+    try:
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+
+        projection = ccrs.PlateCarree()
+        fig = plt.figure(figsize=(9, 8))
+        ax = plt.axes(projection=projection)
+        ax.set_extent(
+            [
+                min(all_lons) - lon_pad,
+                max(all_lons) + lon_pad,
+                min(all_lats) - lat_pad,
+                max(all_lats) + lat_pad,
+            ],
+            crs=projection,
+        )
+        ax.add_feature(cfeature.LAND, facecolor="0.96")
+        ax.add_feature(cfeature.BORDERS, linewidth=0.8)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+        ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45")
+        transform = projection
+    except Exception:
+        fig, ax = plt.subplots(figsize=(9, 8))
+        transform = None
+        ax.set_xlim(min(all_lons) - lon_pad, max(all_lons) + lon_pad)
+        ax.set_ylim(min(all_lats) - lat_pad, max(all_lats) + lat_pad)
+        ax.set_xlabel("longitude")
+        ax.set_ylabel("latitude")
+
+    values = [row["horizontal_uncertainty_km"] for row in rows]
+    scatter_kwargs = {
+        "s": 18,
+        "c": values,
+        "cmap": "viridis",
+        "alpha": 0.8,
+        "edgecolors": "black",
+        "linewidths": 0.2,
+        "zorder": 4,
+    }
+    if transform is not None:
+        scatter_kwargs["transform"] = transform
+    scatter = ax.scatter(
+        [row["longitude"] for row in rows],
+        [row["latitude"] for row in rows],
+        **scatter_kwargs,
+    )
+    station_kwargs = {
+        "s": 34,
+        "marker": "^",
+        "c": "black",
+        "edgecolors": "white",
+        "linewidths": 0.4,
+        "label": "Stations",
+        "zorder": 5,
+    }
+    if transform is not None:
+        station_kwargs["transform"] = transform
+    if stations:
+        ax.scatter(
+            [station["longitude"] for station in stations.values()],
+            [station["latitude"] for station in stations.values()],
+            **station_kwargs,
+        )
+    colorbar = plt.colorbar(scatter, ax=ax, shrink=0.82)
+    colorbar.set_label("bootstrap horizontal uncertainty (km)")
+    ax.set_title(
+        "Bootstrap Horizontal Relocation Uncertainty (%i events)" % len(rows)
+    )
+    if hasattr(ax, "gridlines"):
+        gl = ax.gridlines(
+            draw_labels=True,
+            linewidth=0.3,
+            color="0.5",
+            alpha=0.5,
+            linestyle="--",
+        )
+        gl.top_labels = False
+        gl.right_labels = False
+    else:
+        ax.grid(True, linewidth=0.3, alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close(fig)
+    return [str(path)]
+
+
 def create_quality_report(
     working_dir,
     velocity_model_csv,
@@ -1912,6 +2126,12 @@ def create_quality_report(
     if not log_path.exists():
         log_path = output_files / "hypoDD.log"
     convergence_rows = parse_hypodd_log(log_path) if log_path.exists() else []
+    bootstrap_uncertainty_path = working_dir / "bootstrap" / (
+        "bootstrap_location_uncertainty.csv"
+    )
+    bootstrap_uncertainties = read_bootstrap_uncertainties(
+        bootstrap_uncertainty_path
+    )
     shifts = location_shift_rows(original, relocated)
 
     pick_original = []
@@ -2090,6 +2310,10 @@ def create_quality_report(
     _write_rows(output_dir / "station_residuals.csv", station_rows)
     _write_rows(output_dir / "cluster_sizes.csv", cluster_rows)
     _write_rows(output_dir / "iteration_convergence.csv", convergence_rows)
+    _write_rows(
+        output_dir / "bootstrap_location_uncertainty.csv",
+        list(bootstrap_uncertainties.values()),
+    )
     _write_rows(output_dir / "plot_pick_residuals_original.csv", pick_plot_original)
     _write_rows(output_dir / "plot_dd_residuals_original.csv", dd_plot_original)
     _write_rows(output_dir / "plot_pick_residuals_relocated.csv", pick_plot_relocated)
@@ -2117,11 +2341,20 @@ def create_quality_report(
         plot_paths.extend(
             make_ukraine_cartopy_plot(output_dir, original, relocated, stations)
         )
+        plot_paths.extend(
+            make_bootstrap_uncertainty_plot(
+                output_dir,
+                relocated,
+                stations,
+                bootstrap_uncertainties,
+            )
+        )
 
     return {
         "summary": summary_rows,
         "clusters": cluster_rows,
         "convergence": convergence_rows,
+        "bootstrap_uncertainties": bootstrap_uncertainties,
         "output_dir": str(output_dir),
         "plots": plot_paths,
     }
