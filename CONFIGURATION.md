@@ -168,6 +168,14 @@ If unset, HypoDDPy computes this automatically from the event geometry. The curr
 
 Smaller values make tighter, more local clusters. Larger values allow more distant event pairs and can merge clusters.
 
+### `MAXTIMESEP_DAYS`
+
+Float in days. Wrapper-only event-pair time filter applied to `dt.ct` after `ph2dt` has created catalog differential-time pairs.
+
+Use `-999` to disable. For example, `MAXTIMESEP_DAYS = 30` keeps only event-pair blocks whose origin times are separated by 30 days or less.
+
+This does not change `ph2dt` itself; it removes event-pair blocks from `dt.ct` before HypoDD runs. If you change this value in an existing working directory, delete the existing `input_files/dt.ct` or use a fresh working directory to regenerate the unfiltered `dt.ct`.
+
 ### `MAXNGH`
 
 Integer. Maximum number of neighboring events considered for each event.

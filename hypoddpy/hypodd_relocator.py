@@ -321,6 +321,7 @@ class HypoDDRelocator(object):
             * MINLNK  (Will be set to 8. Should not be set lower.)
             * MINOBS  (Will be set to 8.)
             * MAXOBS  (Will be set to 50.)
+            * MAXTIMESEP_DAYS (Wrapper-only dt.ct pair filter. -999 disables.)
 
             For hypoDD.inp
             * MAXDIST - DIST in the hypoDD manual for hypoDD.inp. Same as
@@ -335,6 +336,7 @@ class HypoDDRelocator(object):
             "MINLNK",
             "MINOBS",
             "MAXOBS",
+            "MAXTIMESEP_DAYS",
             "IPHA",
             "OBSCC",
             "OBSCT",
@@ -1167,6 +1169,7 @@ class HypoDDRelocator(object):
             break
         if files_exists is True:
             self.log("ph2dt output files already existant.")
+            self._filter_dt_ct_by_max_time_separation()
             return
         # Otherwise just run it.
         self.log("Running ph2dt...")
@@ -1215,6 +1218,7 @@ class HypoDDRelocator(object):
                 os.path.join(ph2dt_dir, o_file),
                 os.path.join(self.paths["input_files"], o_file),
             )
+        self._filter_dt_ct_by_max_time_separation()
         # Also copy the log file.
         log_file = os.path.join(ph2dt_dir, "ph2dt.log")
         if os.path.exists(log_file):
@@ -1224,6 +1228,86 @@ class HypoDDRelocator(object):
         # Remove the temporary ph2dt running directory.
         shutil.rmtree(ph2dt_dir)
         self.log("ph2dt run successful.")
+
+    def _filter_dt_ct_by_max_time_separation(self):
+        """
+        Optionally remove dt.ct event-pair blocks separated by too much time.
+
+        Controlled by the wrapper-only configuration key MAXTIMESEP_DAYS in the
+        [ph2dt] section. A value of -999 disables the filter.
+        """
+        max_time_sep_days = self.forced_configuration_values.get(
+            "MAXTIMESEP_DAYS", -999
+        )
+        if max_time_sep_days in ("", None):
+            return
+        max_time_sep_days = float(max_time_sep_days)
+        if max_time_sep_days == -999:
+            return
+        if max_time_sep_days < 0:
+            msg = "MAXTIMESEP_DAYS must be positive or -999."
+            raise HypoDDException(msg)
+
+        event_times = {}
+        for event in self.events:
+            event_number = self.event_map[event["event_id"]]
+            event_times[int(event_number)] = event["origin_time"]
+
+        dt_ct_path = os.path.join(self.paths["input_files"], "dt.ct")
+        if not os.path.exists(dt_ct_path):
+            return
+
+        kept_lines = []
+        current_header = None
+        current_rows = []
+        current_keep = True
+        total_pairs = 0
+        removed_pairs = 0
+        removed_rows = 0
+
+        def flush_current():
+            nonlocal removed_pairs, removed_rows
+            if current_header is None:
+                return
+            if current_keep:
+                kept_lines.append(current_header)
+                kept_lines.extend(current_rows)
+            else:
+                removed_pairs += 1
+                removed_rows += len(current_rows)
+
+        with open(dt_ct_path, "r") as open_file:
+            for line in open_file:
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] == "#":
+                    flush_current()
+                    current_header = line.rstrip("\n")
+                    current_rows = []
+                    current_keep = True
+                    total_pairs += 1
+                    if len(parts) >= 3:
+                        event_id_1 = int(parts[1])
+                        event_id_2 = int(parts[2])
+                        time_1 = event_times.get(event_id_1)
+                        time_2 = event_times.get(event_id_2)
+                        if time_1 is not None and time_2 is not None:
+                            delta_days = abs(time_1 - time_2) / 86400.0
+                            current_keep = delta_days <= max_time_sep_days
+                    continue
+                current_rows.append(line.rstrip("\n"))
+        flush_current()
+
+        with open(dt_ct_path, "w") as open_file:
+            open_file.write("\n".join(kept_lines))
+            if kept_lines:
+                open_file.write("\n")
+        self.log(
+            "Filtered dt.ct by MAXTIMESEP_DAYS=%s: removed %i/%i event "
+            "pairs and %i observations."
+            % (max_time_sep_days, removed_pairs, total_pairs, removed_rows)
+        )
 
     def _parse_waveform_files(self):
         """
