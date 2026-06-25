@@ -5,6 +5,7 @@ import glob
 import json
 import logging
 import math
+import numpy as np
 from obspy.core import read, Stream, UTCDateTime
 from obspy.core.inventory import read_inventory
 from obspy.core.event import (
@@ -35,6 +36,91 @@ class HypoDDException(Exception):
     pass
 
 
+def _fast_xcorr_pick_correction(
+    pick_1_time,
+    trace_1,
+    pick_2_time,
+    trace_2,
+    t_before,
+    t_after,
+    cc_maxlag,
+    filter=None,
+    filter_options=None,
+):
+    """
+    Fast integer-sample normalized cross correlation around two picks.
+
+    Returns the time correction to add to pick_2 and the corresponding
+    normalized correlation coefficient. This mirrors the sign convention used
+    by ObsPy's ``xcorr_pick_correction`` for HypoDDPy's dt.cc generation, but
+    intentionally does not do sub-sample interpolation.
+    """
+    if trace_1.stats.sampling_rate != trace_2.stats.sampling_rate:
+        raise ValueError("Sampling rates must match.")
+    sampling_rate = float(trace_1.stats.sampling_rate)
+    if filter == "bandpass":
+        trace_1 = trace_1.copy()
+        trace_2 = trace_2.copy()
+        filter_options = filter_options or {}
+        trace_1.detrend("demean")
+        trace_2.detrend("demean")
+        trace_1.filter("bandpass", **filter_options)
+        trace_2.filter("bandpass", **filter_options)
+    elif filter in [None, "none"]:
+        pass
+    else:
+        raise ValueError("Unsupported fast cross-correlation filter: %s" % filter)
+
+    n_before = int(round(float(t_before) * sampling_rate))
+    n_after = int(round(float(t_after) * sampling_rate))
+    n_samples = n_before + n_after + 1
+    max_lag_samples = int(round(float(cc_maxlag) * sampling_rate))
+    if n_samples < 3:
+        raise ValueError("Less than 3 samples selected for cross correlation.")
+    if max_lag_samples < 0:
+        raise ValueError("cc_maxlag must be non-negative.")
+
+    data_1 = np.asarray(trace_1.data, dtype=np.float64)
+    data_2 = np.asarray(trace_2.data, dtype=np.float64)
+    if data_1.size == 0 or data_2.size == 0:
+        raise ValueError("empty array")
+
+    pick_1_index = int(round((pick_1_time - trace_1.stats.starttime) * sampling_rate))
+    pick_2_index = int(round((pick_2_time - trace_2.stats.starttime) * sampling_rate))
+    start_1 = pick_1_index - n_before
+    end_1 = start_1 + n_samples
+    if start_1 < 0 or end_1 > data_1.size:
+        raise ValueError("empty array")
+    window_1 = data_1[start_1:end_1].astype(np.float64)
+    window_1 -= window_1.mean()
+    norm_1 = np.linalg.norm(window_1)
+    if norm_1 == 0.0 or not np.isfinite(norm_1):
+        raise ValueError("empty array")
+
+    best_coeff = -np.inf
+    best_lag_samples = 0
+    for lag_samples in range(-max_lag_samples, max_lag_samples + 1):
+        start_2 = pick_2_index + lag_samples - n_before
+        end_2 = start_2 + n_samples
+        if start_2 < 0 or end_2 > data_2.size:
+            continue
+        window_2 = data_2[start_2:end_2].astype(np.float64)
+        window_2 -= window_2.mean()
+        norm_2 = np.linalg.norm(window_2)
+        if norm_2 == 0.0 or not np.isfinite(norm_2):
+            continue
+        coeff = float(np.dot(window_1, window_2) / (norm_1 * norm_2))
+        if coeff > best_coeff:
+            best_coeff = coeff
+            best_lag_samples = lag_samples
+
+    if not np.isfinite(best_coeff):
+        raise ValueError("empty array")
+    # Positive lag_samples means the matching waveform in trace_2 is later than
+    # pick_2, so the correction added to pick_2 is positive.
+    return best_lag_samples / sampling_rate, best_coeff
+
+
 class HypoDDRelocator(object):
     def __init__(
         self,
@@ -42,6 +128,7 @@ class HypoDDRelocator(object):
         cc_time_before=0.05,
         cc_time_after=0.2,
         cc_maxlag=0.1,
+        cc_backend="obspy",
         cc_filter="bandpass",
         cc_filter_min_freq=1.0,
         cc_filter_max_freq=20.0,
@@ -68,6 +155,9 @@ class HypoDDRelocator(object):
             in seconds. Defaults to 0.2.
         :param cc_maxlag: Maximum lag time tested during cross correlation.
             Defaults to 0.1.
+        :param cc_backend: Cross-correlation implementation. Use "obspy" for
+            ObsPy's xcorr_pick_correction or "fast_numpy" for a faster
+            integer-sample normalized correlation. Defaults to "obspy".
         :param cc_filter: Filter to apply during cross correlation. Use
             "bandpass" or "none". Defaults to "bandpass".
         :param cc_filter_min_freq: Lower corner frequency for the Butterworth
@@ -123,6 +213,12 @@ class HypoDDRelocator(object):
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
 
+        cc_backend = str(cc_backend).strip().lower()
+        if cc_backend in ["numpy", "fast", "fast-numpy"]:
+            cc_backend = "fast_numpy"
+        if cc_backend not in ["obspy", "fast_numpy"]:
+            msg = "cc_backend must be 'obspy' or 'fast_numpy'."
+            raise HypoDDException(msg)
         cc_filter = str(cc_filter).lower()
         if cc_filter in ["", "none", "false", "off", "no"]:
             cc_filter = None
@@ -154,6 +250,7 @@ class HypoDDRelocator(object):
             "cc_time_before": cc_time_before,
             "cc_time_after": cc_time_after,
             "cc_maxlag": cc_maxlag,
+            "cc_backend": cc_backend,
             "cc_filter": cc_filter,
             "cc_filter_min_freq": cc_filter_min_freq,
             "cc_filter_max_freq": cc_filter_max_freq,
@@ -375,7 +472,8 @@ class HypoDDRelocator(object):
                 lsqr_time_constraint_weight
 
             [cross_correlation]
-                cc_time_before, cc_time_after, cc_maxlag, cc_filter,
+                cc_time_before, cc_time_after, cc_maxlag, cc_backend,
+                cc_filter,
                 cc_filter_min_freq, cc_filter_max_freq,
                 cc_min_allowed_cross_corr_coeff, cc_p_phase_weighting,
                 cc_s_phase_weighting
@@ -424,6 +522,14 @@ class HypoDDRelocator(object):
 
         if parser.has_section("cross_correlation"):
             section = parser["cross_correlation"]
+            if "cc_backend" in section:
+                cc_backend = section.get("cc_backend").strip().lower()
+                if cc_backend in ["numpy", "fast", "fast-numpy"]:
+                    cc_backend = "fast_numpy"
+                if cc_backend not in ["obspy", "fast_numpy"]:
+                    msg = "cc_backend must be 'obspy' or 'fast_numpy'."
+                    raise HypoDDException(msg)
+                self.cc_param["cc_backend"] = cc_backend
             if "cc_filter" in section:
                 cc_filter = section.get("cc_filter").strip().lower()
                 if cc_filter in ["", "none", "false", "off", "no"]:
@@ -1885,21 +1991,37 @@ class HypoDDRelocator(object):
                                             "cc_filter_max_freq"
                                         ],
                                     }
-                                (
-                                    pick2_corr,
-                                    cross_corr_coeff,
-                                ) = xcorr_pick_correction(
-                                    pick_1["pick_time"],
-                                    trace_1,
-                                    pick_2["pick_time"],
-                                    trace_2,
-                                    t_before=self.cc_param["cc_time_before"],
-                                    t_after=self.cc_param["cc_time_after"],
-                                    cc_maxlag=self.cc_param["cc_maxlag"],
-                                    filter=filter_name,
-                                     filter_options=filter_options,
-                                     plot=False,
-                                 )
+                                if self.cc_param["cc_backend"] == "fast_numpy":
+                                    (
+                                        pick2_corr,
+                                        cross_corr_coeff,
+                                    ) = _fast_xcorr_pick_correction(
+                                        pick_1["pick_time"],
+                                        trace_1,
+                                        pick_2["pick_time"],
+                                        trace_2,
+                                        t_before=self.cc_param["cc_time_before"],
+                                        t_after=self.cc_param["cc_time_after"],
+                                        cc_maxlag=self.cc_param["cc_maxlag"],
+                                        filter=filter_name,
+                                        filter_options=filter_options,
+                                    )
+                                else:
+                                    (
+                                        pick2_corr,
+                                        cross_corr_coeff,
+                                    ) = xcorr_pick_correction(
+                                        pick_1["pick_time"],
+                                        trace_1,
+                                        pick_2["pick_time"],
+                                        trace_2,
+                                        t_before=self.cc_param["cc_time_before"],
+                                        t_after=self.cc_param["cc_time_after"],
+                                        cc_maxlag=self.cc_param["cc_maxlag"],
+                                        filter=filter_name,
+                                        filter_options=filter_options,
+                                        plot=False,
+                                    )
                                 cc_success = True
                             except Exception as err:
                                 # XXX: Maybe maxlag is too short?

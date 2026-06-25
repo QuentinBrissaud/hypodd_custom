@@ -94,6 +94,15 @@ Float in seconds. End the cross-correlation window this many seconds after the p
 
 Float in seconds. Maximum lag searched when correcting the second pick relative to the first pick.
 
+### `cc_backend`
+
+String. Cross-correlation implementation used to generate `dt.cc`.
+
+Allowed values:
+
+- `obspy`: use ObsPy's `xcorr_pick_correction`. This is the original behavior and remains the default.
+- `fast_numpy`: use a direct normalized NumPy correlation over integer-sample lags. This is faster for short snippets, but the time correction is quantized to one sample.
+
 ### `cc_filter`
 
 String. Filter applied before cross-correlation.
