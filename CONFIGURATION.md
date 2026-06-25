@@ -101,7 +101,15 @@ String. Cross-correlation implementation used to generate `dt.cc`.
 Allowed values:
 
 - `obspy`: use ObsPy's `xcorr_pick_correction`. This is the original behavior and remains the default.
-- `fast_numpy`: use a direct normalized NumPy correlation over integer-sample lags. This is faster for short snippets, but the time correction is quantized to one sample.
+- `numpy_cache`: cache waveform reads and filtered trace arrays, then use vectorized normalized NumPy correlation over integer-sample lags. This skips ObsPy's sub-sample interpolation, so the time correction is quantized to one sample.
+
+Legacy values `fast_numpy`, `fast-numpy`, `fast`, and `numpy` are accepted as aliases for `numpy_cache`.
+
+### `cc_write_pair_files`
+
+Boolean. If `true`, HypoDDPy writes one intermediate file per event pair under `working_files/cc_files` and assembles `dt.cc` from those files. This preserves the older resumable/debuggable behavior.
+
+If `false`, HypoDDPy keeps event-pair cross-correlation rows in memory and writes only the final `dt.cc`, avoiding many tiny file writes. This is usually faster, especially on Windows or network filesystems.
 
 ### `cc_filter`
 

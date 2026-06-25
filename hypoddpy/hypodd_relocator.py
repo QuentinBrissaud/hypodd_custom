@@ -36,7 +36,17 @@ class HypoDDException(Exception):
     pass
 
 
-def _fast_xcorr_pick_correction(
+def _normalize_cc_backend(cc_backend):
+    cc_backend = str(cc_backend).strip().lower()
+    if cc_backend in ["numpy", "fast", "fast-numpy", "fast_numpy"]:
+        cc_backend = "numpy_cache"
+    if cc_backend not in ["obspy", "numpy_cache"]:
+        msg = "cc_backend must be 'obspy' or 'numpy_cache'."
+        raise HypoDDException(msg)
+    return cc_backend
+
+
+def _numpy_cache_xcorr_pick_correction(
     pick_1_time,
     trace_1,
     pick_2_time,
@@ -46,30 +56,18 @@ def _fast_xcorr_pick_correction(
     cc_maxlag,
     filter=None,
     filter_options=None,
+    trace_cache=None,
 ):
     """
-    Fast integer-sample normalized cross correlation around two picks.
+    Vectorized integer-sample normalized cross correlation around two picks.
 
     Returns the time correction to add to pick_2 and the corresponding
-    normalized correlation coefficient. This mirrors the sign convention used
-    by ObsPy's ``xcorr_pick_correction`` for HypoDDPy's dt.cc generation, but
-    intentionally does not do sub-sample interpolation.
+    normalized correlation coefficient. This backend intentionally does not do
+    sub-sample interpolation.
     """
     if trace_1.stats.sampling_rate != trace_2.stats.sampling_rate:
         raise ValueError("Sampling rates must match.")
     sampling_rate = float(trace_1.stats.sampling_rate)
-    if filter == "bandpass":
-        trace_1 = trace_1.copy()
-        trace_2 = trace_2.copy()
-        filter_options = filter_options or {}
-        trace_1.detrend("demean")
-        trace_2.detrend("demean")
-        trace_1.filter("bandpass", **filter_options)
-        trace_2.filter("bandpass", **filter_options)
-    elif filter in [None, "none"]:
-        pass
-    else:
-        raise ValueError("Unsupported fast cross-correlation filter: %s" % filter)
 
     n_before = int(round(float(t_before) * sampling_rate))
     n_after = int(round(float(t_after) * sampling_rate))
@@ -80,8 +78,8 @@ def _fast_xcorr_pick_correction(
     if max_lag_samples < 0:
         raise ValueError("cc_maxlag must be non-negative.")
 
-    data_1 = np.asarray(trace_1.data, dtype=np.float64)
-    data_2 = np.asarray(trace_2.data, dtype=np.float64)
+    data_1 = _preprocessed_trace_data(trace_1, filter, filter_options, trace_cache)
+    data_2 = _preprocessed_trace_data(trace_2, filter, filter_options, trace_cache)
     if data_1.size == 0 or data_2.size == 0:
         raise ValueError("empty array")
 
@@ -97,28 +95,74 @@ def _fast_xcorr_pick_correction(
     if norm_1 == 0.0 or not np.isfinite(norm_1):
         raise ValueError("empty array")
 
-    best_coeff = -np.inf
-    best_lag_samples = 0
-    for lag_samples in range(-max_lag_samples, max_lag_samples + 1):
-        start_2 = pick_2_index + lag_samples - n_before
-        end_2 = start_2 + n_samples
-        if start_2 < 0 or end_2 > data_2.size:
-            continue
-        window_2 = data_2[start_2:end_2].astype(np.float64)
-        window_2 -= window_2.mean()
-        norm_2 = np.linalg.norm(window_2)
-        if norm_2 == 0.0 or not np.isfinite(norm_2):
-            continue
-        coeff = float(np.dot(window_1, window_2) / (norm_1 * norm_2))
-        if coeff > best_coeff:
-            best_coeff = coeff
-            best_lag_samples = lag_samples
+    lag_min = max(-max_lag_samples, n_before - pick_2_index)
+    lag_max = min(max_lag_samples, data_2.size - pick_2_index - n_after - 1)
+    if lag_min > lag_max:
+        raise ValueError("empty array")
 
+    segment_start = pick_2_index + lag_min - n_before
+    segment_end = pick_2_index + lag_max + n_after + 1
+    segment = data_2[segment_start:segment_end].astype(np.float64, copy=False)
+    windows_2 = np.lib.stride_tricks.sliding_window_view(segment, n_samples)
+    windows_2 = windows_2.astype(np.float64, copy=True)
+    windows_2 -= windows_2.mean(axis=1, keepdims=True)
+    norms_2 = np.linalg.norm(windows_2, axis=1)
+    valid = np.isfinite(norms_2) & (norms_2 > 0.0)
+    if not valid.any():
+        raise ValueError("empty array")
+
+    coefficients = np.full(windows_2.shape[0], -np.inf, dtype=np.float64)
+    coefficients[valid] = windows_2[valid].dot(window_1) / (norms_2[valid] * norm_1)
+    best_index = int(np.argmax(coefficients))
+    best_coeff = float(coefficients[best_index])
     if not np.isfinite(best_coeff):
         raise ValueError("empty array")
+    best_lag_samples = best_index + lag_min
     # Positive lag_samples means the matching waveform in trace_2 is later than
     # pick_2, so the correction added to pick_2 is positive.
     return best_lag_samples / sampling_rate, best_coeff
+
+
+def _preprocessed_trace_data(trace, filter_name, filter_options, trace_cache):
+    """
+    Return a cached float64 trace array after the configured CC preprocessing.
+    """
+    if filter_name in [None, "none"]:
+        filter_key = ("none",)
+    elif filter_name == "bandpass":
+        filter_options = filter_options or {}
+        filter_key = (
+            "bandpass",
+            float(filter_options["freqmin"]),
+            float(filter_options["freqmax"]),
+        )
+    else:
+        raise ValueError(
+            "Unsupported numpy_cache cross-correlation filter: %s" % filter_name
+        )
+
+    key = (
+        getattr(trace.stats, "hypoddpy_source_file", None) or id(trace.data),
+        trace.id,
+        str(trace.stats.starttime),
+        int(trace.stats.npts),
+        float(trace.stats.sampling_rate),
+        filter_key,
+    )
+    if trace_cache is not None and key in trace_cache:
+        return trace_cache[key]
+
+    if filter_name == "bandpass":
+        filtered = trace.copy()
+        filtered.detrend("demean")
+        filtered.filter("bandpass", **filter_options)
+        data = np.asarray(filtered.data, dtype=np.float64)
+    else:
+        data = np.asarray(trace.data, dtype=np.float64)
+
+    if trace_cache is not None:
+        trace_cache[key] = data
+    return data
 
 
 class HypoDDRelocator(object):
@@ -129,6 +173,7 @@ class HypoDDRelocator(object):
         cc_time_after=0.2,
         cc_maxlag=0.1,
         cc_backend="obspy",
+        cc_write_pair_files=True,
         cc_filter="bandpass",
         cc_filter_min_freq=1.0,
         cc_filter_max_freq=20.0,
@@ -156,8 +201,12 @@ class HypoDDRelocator(object):
         :param cc_maxlag: Maximum lag time tested during cross correlation.
             Defaults to 0.1.
         :param cc_backend: Cross-correlation implementation. Use "obspy" for
-            ObsPy's xcorr_pick_correction or "fast_numpy" for a faster
-            integer-sample normalized correlation. Defaults to "obspy".
+            ObsPy's xcorr_pick_correction or "numpy_cache" for cached waveform
+            reads plus vectorized integer-sample correlation. Defaults to
+            "obspy".
+        :param cc_write_pair_files: If True, write one intermediate text file
+            per event pair. If False, write only the final dt.cc file, which is
+            faster on filesystems where many tiny files are expensive.
         :param cc_filter: Filter to apply during cross correlation. Use
             "bandpass" or "none". Defaults to "bandpass".
         :param cc_filter_min_freq: Lower corner frequency for the Butterworth
@@ -213,12 +262,7 @@ class HypoDDRelocator(object):
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
 
-        cc_backend = str(cc_backend).strip().lower()
-        if cc_backend in ["numpy", "fast", "fast-numpy"]:
-            cc_backend = "fast_numpy"
-        if cc_backend not in ["obspy", "fast_numpy"]:
-            msg = "cc_backend must be 'obspy' or 'fast_numpy'."
-            raise HypoDDException(msg)
+        cc_backend = _normalize_cc_backend(cc_backend)
         cc_filter = str(cc_filter).lower()
         if cc_filter in ["", "none", "false", "off", "no"]:
             cc_filter = None
@@ -251,6 +295,7 @@ class HypoDDRelocator(object):
             "cc_time_after": cc_time_after,
             "cc_maxlag": cc_maxlag,
             "cc_backend": cc_backend,
+            "cc_write_pair_files": bool(cc_write_pair_files),
             "cc_filter": cc_filter,
             "cc_filter_min_freq": cc_filter_min_freq,
             "cc_filter_max_freq": cc_filter_max_freq,
@@ -473,7 +518,7 @@ class HypoDDRelocator(object):
 
             [cross_correlation]
                 cc_time_before, cc_time_after, cc_maxlag, cc_backend,
-                cc_filter,
+                cc_write_pair_files, cc_filter,
                 cc_filter_min_freq, cc_filter_max_freq,
                 cc_min_allowed_cross_corr_coeff, cc_p_phase_weighting,
                 cc_s_phase_weighting
@@ -523,13 +568,13 @@ class HypoDDRelocator(object):
         if parser.has_section("cross_correlation"):
             section = parser["cross_correlation"]
             if "cc_backend" in section:
-                cc_backend = section.get("cc_backend").strip().lower()
-                if cc_backend in ["numpy", "fast", "fast-numpy"]:
-                    cc_backend = "fast_numpy"
-                if cc_backend not in ["obspy", "fast_numpy"]:
-                    msg = "cc_backend must be 'obspy' or 'fast_numpy'."
-                    raise HypoDDException(msg)
-                self.cc_param["cc_backend"] = cc_backend
+                self.cc_param["cc_backend"] = _normalize_cc_backend(
+                    section.get("cc_backend")
+                )
+            if "cc_write_pair_files" in section:
+                self.cc_param["cc_write_pair_files"] = section.getboolean(
+                    "cc_write_pair_files"
+                )
             if "cc_filter" in section:
                 cc_filter = section.get("cc_filter").strip().lower()
                 if cc_filter in ["", "none", "false", "off", "no"]:
@@ -1635,6 +1680,8 @@ class HypoDDRelocator(object):
             self.log("ct.cc input file already exists")
             return
         self.cc_diagnostics = {
+            "backend": self.cc_param["cc_backend"],
+            "write_pair_files": self.cc_param["cc_write_pair_files"],
             "event_pairs_total": 0,
             "pick_pairs_considered": 0,
             "accepted": 0,
@@ -1661,7 +1708,8 @@ class HypoDDRelocator(object):
         # This is by far the lengthiest operation and will be broken up in
         # smaller steps
         cc_dir = os.path.join(self.paths["working_files"], "cc_files")
-        if not os.path.exists(cc_dir):
+        write_pair_files = self.cc_param["cc_write_pair_files"]
+        if write_pair_files and not os.path.exists(cc_dir):
             os.makedirs(cc_dir)
         # Read the dt.ct file and get all event pairs.
         dt_ct_path = os.path.join(self.paths["input_files"], "dt.ct")
@@ -1695,6 +1743,17 @@ class HypoDDRelocator(object):
         )
         pbar_progress = 1
         pbar.start()
+        final_strings = []
+        waveform_stream_cache = {}
+        trace_data_cache = {}
+
+        def read_waveform_file_cached(filename):
+            if filename not in waveform_stream_cache:
+                waveform_stream_cache[filename] = read(filename)
+                for trace in waveform_stream_cache[filename]:
+                    trace.stats.hypoddpy_source_file = filename
+            return waveform_stream_cache[filename].copy()
+
         for event_1, event_2 in event_id_pairs:
             self.cc_diagnostics["event_pairs_total"] += 1
             # Update the progress bar.
@@ -1704,7 +1763,7 @@ class HypoDDRelocator(object):
             event_pair_file = os.path.join(
                 cc_dir, "%i_%i.txt" % (event_1, event_2)
             )
-            if os.path.exists(event_pair_file):
+            if write_pair_files and os.path.exists(event_pair_file):
                 continue
             current_pair_strings = []
             # Find the corresponding events.
@@ -1825,9 +1884,9 @@ class HypoDDRelocator(object):
                     stream_1 = Stream()
                     stream_2 = Stream()
                     for waveform_file in data_files_1:
-                        stream_1 += read(waveform_file)
+                        stream_1 += read_waveform_file_cached(waveform_file)
                     for waveform_file in data_files_2:
-                        stream_2 += read(waveform_file)
+                        stream_2 += read_waveform_file_cached(waveform_file)
                     # Get the corresponing pick weighting dictionary.
                     if pick_1_phase == "P":
                         pick_weight_dict = self.cc_param[
@@ -1991,11 +2050,11 @@ class HypoDDRelocator(object):
                                             "cc_filter_max_freq"
                                         ],
                                     }
-                                if self.cc_param["cc_backend"] == "fast_numpy":
+                                if self.cc_param["cc_backend"] == "numpy_cache":
                                     (
                                         pick2_corr,
                                         cross_corr_coeff,
-                                    ) = _fast_xcorr_pick_correction(
+                                    ) = _numpy_cache_xcorr_pick_correction(
                                         pick_1["pick_time"],
                                         trace_1,
                                         pick_2["pick_time"],
@@ -2005,6 +2064,7 @@ class HypoDDRelocator(object):
                                         cc_maxlag=self.cc_param["cc_maxlag"],
                                         filter=filter_name,
                                         filter_options=filter_options,
+                                        trace_cache=trace_data_cache,
                                     )
                                 else:
                                     (
@@ -2135,18 +2195,23 @@ class HypoDDRelocator(object):
                 )
                 self.cc_diagnostics["coefficients"].append(cross_corr_coeff)
             # Write the file.
-            with open(event_pair_file, "w") as open_file:
-                open_file.write("\n".join(current_pair_strings))
+            current_pair_string = "\n".join(current_pair_strings)
+            if write_pair_files:
+                with open(event_pair_file, "w") as open_file:
+                    open_file.write(current_pair_string)
+            else:
+                final_strings.append(current_pair_string)
         pbar.finish()
         self.log("Finished calculating cross correlations.")
         if outfile:
             self.save_cross_correlation_results(outfile)
         # Assemble final file.
-        final_string = []
-        for cc_file in glob.iglob(os.path.join(cc_dir, "*.txt")):
-            with open(cc_file, "r") as open_file:
-                final_string.append(open_file.read().strip())
-        final_string = "\n".join(final_string)
+        if write_pair_files:
+            final_strings = []
+            for cc_file in glob.iglob(os.path.join(cc_dir, "*.txt")):
+                with open(cc_file, "r") as open_file:
+                    final_strings.append(open_file.read().strip())
+        final_string = "\n".join(final_strings)
         with open(ct_file_path, "w") as open_file:
             open_file.write(final_string)
 
