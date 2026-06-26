@@ -211,6 +211,60 @@ def combined_event_residual_summary_rows(pick_event_rows, dd_event_rows):
     return [by_event[event_id] for event_id in sorted(by_event)]
 
 
+def dd_rms_reduction_rows(paired_original, paired_relocated, locations, group_key):
+    """
+    Summarize paired DD residual RMS reduction by cluster or month and phase.
+    """
+    grouped = defaultdict(lambda: {"original": [], "relocated": []})
+    for original_row, relocated_row in zip(paired_original, paired_relocated):
+        event_1 = locations.get(original_row["event_id_1"])
+        event_2 = locations.get(original_row["event_id_2"])
+        if event_1 is None or event_2 is None:
+            continue
+
+        if group_key == "cluster_id":
+            cluster_1 = event_1.get("cluster_id", "")
+            cluster_2 = event_2.get("cluster_id", "")
+            group_value = cluster_1 if cluster_1 == cluster_2 else ""
+        elif group_key == "month":
+            group_value = _month_label(_midpoint_time(event_1["time"], event_2["time"]))
+        else:
+            raise ValueError("Unsupported RMS reduction group: %s" % group_key)
+
+        if group_value in ("", None):
+            continue
+        phase = original_row.get("phase", relocated_row.get("phase", "")).upper()
+        if phase not in ("P", "S"):
+            continue
+        bucket = grouped[(group_value, phase)]
+        bucket["original"].append(original_row["residual_s"])
+        bucket["relocated"].append(relocated_row["residual_s"])
+
+    rows = []
+    for group_value, phase in sorted(grouped):
+        original_values = grouped[(group_value, phase)]["original"]
+        relocated_values = grouped[(group_value, phase)]["relocated"]
+        original_rms = _summary(original_values)["rms"]
+        relocated_rms = _summary(relocated_values)["rms"]
+        reduction_s = original_rms - relocated_rms
+        if original_rms and math.isfinite(original_rms):
+            reduction_percent = 100.0 * reduction_s / original_rms
+        else:
+            reduction_percent = math.nan
+        rows.append(
+            {
+                group_key: group_value,
+                "phase": phase,
+                "count": len(original_values),
+                "original_rms_s": original_rms,
+                "relocated_rms_s": relocated_rms,
+                "rms_reduction_s": reduction_s,
+                "rms_reduction_percent": reduction_percent,
+            }
+        )
+    return rows
+
+
 def _write_rows(path, rows, fieldnames=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2280,6 +2334,19 @@ def create_quality_report(
         if event_id in relocated:
             event["cluster_id"] = relocated[event_id].get("cluster_id", "")
 
+    dd_rms_reduction_by_cluster = dd_rms_reduction_rows(
+        comparison_dd_original,
+        comparison_dd_relocated,
+        original_for_cluster_plots,
+        "cluster_id",
+    )
+    dd_rms_reduction_by_month = dd_rms_reduction_rows(
+        comparison_dd_original,
+        comparison_dd_relocated,
+        original_for_cluster_plots,
+        "month",
+    )
+
     pick_plot_original = add_pick_plot_metadata(
         pick_original, original_for_cluster_plots
     )
@@ -2307,6 +2374,32 @@ def create_quality_report(
         event_dd_rows,
     )
     _write_rows(output_dir / "event_residual_summary.csv", event_residual_rows)
+    _write_rows(
+        output_dir / "dd_rms_reduction_by_cluster.csv",
+        dd_rms_reduction_by_cluster,
+        fieldnames=[
+            "cluster_id",
+            "phase",
+            "count",
+            "original_rms_s",
+            "relocated_rms_s",
+            "rms_reduction_s",
+            "rms_reduction_percent",
+        ],
+    )
+    _write_rows(
+        output_dir / "dd_rms_reduction_by_month.csv",
+        dd_rms_reduction_by_month,
+        fieldnames=[
+            "month",
+            "phase",
+            "count",
+            "original_rms_s",
+            "relocated_rms_s",
+            "rms_reduction_s",
+            "rms_reduction_percent",
+        ],
+    )
     _write_rows(output_dir / "station_residuals.csv", station_rows)
     _write_rows(output_dir / "cluster_sizes.csv", cluster_rows)
     _write_rows(output_dir / "iteration_convergence.csv", convergence_rows)
@@ -2354,6 +2447,8 @@ def create_quality_report(
         "summary": summary_rows,
         "clusters": cluster_rows,
         "convergence": convergence_rows,
+        "dd_rms_reduction_by_cluster": dd_rms_reduction_by_cluster,
+        "dd_rms_reduction_by_month": dd_rms_reduction_by_month,
         "bootstrap_uncertainties": bootstrap_uncertainties,
         "output_dir": str(output_dir),
         "plots": plot_paths,
