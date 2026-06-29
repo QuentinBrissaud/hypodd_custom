@@ -213,7 +213,7 @@ def combined_event_residual_summary_rows(pick_event_rows, dd_event_rows):
 
 def dd_rms_reduction_rows(paired_original, paired_relocated, locations, group_key):
     """
-    Summarize paired DD residual RMS reduction by cluster or month and phase.
+    Summarize paired DD residual RMS reduction by cluster/month, phase, and data type.
     """
     grouped = defaultdict(lambda: {"original": [], "relocated": []})
     for original_row, relocated_row in zip(paired_original, paired_relocated):
@@ -236,14 +236,19 @@ def dd_rms_reduction_rows(paired_original, paired_relocated, locations, group_ke
         phase = original_row.get("phase", relocated_row.get("phase", "")).upper()
         if phase not in ("P", "S"):
             continue
-        bucket = grouped[(group_value, phase)]
+        data_type = original_row.get(
+            "data_type", relocated_row.get("data_type", "")
+        ).lower()
+        if not data_type:
+            data_type = "unknown"
+        bucket = grouped[(group_value, phase, data_type)]
         bucket["original"].append(original_row["residual_s"])
         bucket["relocated"].append(relocated_row["residual_s"])
 
     rows = []
-    for group_value, phase in sorted(grouped):
-        original_values = grouped[(group_value, phase)]["original"]
-        relocated_values = grouped[(group_value, phase)]["relocated"]
+    for group_value, phase, data_type in sorted(grouped):
+        original_values = grouped[(group_value, phase, data_type)]["original"]
+        relocated_values = grouped[(group_value, phase, data_type)]["relocated"]
         original_rms = _summary(original_values)["rms"]
         relocated_rms = _summary(relocated_values)["rms"]
         reduction_s = original_rms - relocated_rms
@@ -255,6 +260,7 @@ def dd_rms_reduction_rows(paired_original, paired_relocated, locations, group_ke
             {
                 group_key: group_value,
                 "phase": phase,
+                "data_type": data_type,
                 "count": len(original_values),
                 "original_rms_s": original_rms,
                 "relocated_rms_s": relocated_rms,
@@ -2380,6 +2386,7 @@ def create_quality_report(
         fieldnames=[
             "cluster_id",
             "phase",
+            "data_type",
             "count",
             "original_rms_s",
             "relocated_rms_s",
@@ -2393,6 +2400,7 @@ def create_quality_report(
         fieldnames=[
             "month",
             "phase",
+            "data_type",
             "count",
             "original_rms_s",
             "relocated_rms_s",
