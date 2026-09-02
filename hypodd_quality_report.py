@@ -453,20 +453,61 @@ def distance_3d_km(event, station):
     return math.sqrt(horizontal * horizontal + vertical * vertical)
 
 
-def inter_event_distances(events):
-    values = []
-    event_list = list(events.values())
-    for i, event_1 in enumerate(event_list):
-        for event_2 in event_list[i + 1 :]:
-            values.append(
-                horizontal_distance_km(
-                    event_1["latitude"],
-                    event_1["longitude"],
-                    event_2["latitude"],
-                    event_2["longitude"],
-                )
-            )
-    return values
+def read_differential_event_pairs(path):
+    """
+    Read unique event-pair headers from dt.ct or dt.cc.
+    """
+    pairs = set()
+    path = Path(path)
+    if not path.exists():
+        return pairs
+    with open(path, "r", encoding="utf-8", errors="replace") as open_file:
+        for line in open_file:
+            parts = line.split()
+            if len(parts) < 3 or parts[0] != "#":
+                continue
+            event_id_1 = int(parts[1])
+            event_id_2 = int(parts[2])
+            pairs.add(tuple(sorted((event_id_1, event_id_2))))
+    return pairs
+
+
+def paired_event_distance_rows(original, relocated, event_pairs):
+    """
+    Compare original and relocated distances for actual DD event pairs.
+    """
+    rows = []
+    for event_id_1, event_id_2 in sorted(event_pairs):
+        if (
+            event_id_1 not in original
+            or event_id_2 not in original
+            or event_id_1 not in relocated
+            or event_id_2 not in relocated
+        ):
+            continue
+        original_distance = horizontal_distance_km(
+            original[event_id_1]["latitude"],
+            original[event_id_1]["longitude"],
+            original[event_id_2]["latitude"],
+            original[event_id_2]["longitude"],
+        )
+        relocated_distance = horizontal_distance_km(
+            relocated[event_id_1]["latitude"],
+            relocated[event_id_1]["longitude"],
+            relocated[event_id_2]["latitude"],
+            relocated[event_id_2]["longitude"],
+        )
+        rows.append(
+            {
+                "event_id_1": event_id_1,
+                "event_id_2": event_id_2,
+                "original_distance_km": original_distance,
+                "relocated_distance_km": relocated_distance,
+                "distance_change_km": relocated_distance - original_distance,
+                "distance_reduction_km": original_distance - relocated_distance,
+            }
+        )
+    return rows
 
 
 def nearest_neighbor_distances(events):
@@ -1418,13 +1459,19 @@ def make_plots(output_dir, summaries, residual_rows, convergence_rows):
 
     raw = summaries.get("_raw", {})
 
+    paired_original = raw.get("paired_event_original_distance_km", [])
+    paired_relocated = raw.get("paired_event_relocated_distance_km", [])
+    if paired_original and paired_relocated:
+        plt.figure()
+        plt.scatter(paired_original, paired_relocated, s=8, alpha=0.45)
+        max_value = max(paired_original + paired_relocated)
+        plt.plot([0, max_value], [0, max_value], color="0.25", linewidth=1.0)
+        plt.xlabel("original paired-event distance (km)")
+        plt.ylabel("relocated paired-event distance (km)")
+        plt.title("Paired Event Distances From DD Graph")
+        save_current("paired_event_original_vs_relocated_km.png")
+
     for original_key, relocated_key, title, filename in [
-        (
-            "interevent_original_km",
-            "interevent_relocated_km",
-            "Inter-Event Distances",
-            "interevent_original_vs_relocated_km.png",
-        ),
         (
             "nearest_original_km",
             "nearest_relocated_km",
@@ -2169,6 +2216,9 @@ def create_quality_report(
     dt_ct_path = input_dir / "dt.ct"
     if not dt_ct_path.exists():
         dt_ct_path = output_files / "dt.ct"
+    dt_cc_path = input_dir / "dt.cc"
+    if not dt_cc_path.exists():
+        dt_cc_path = output_files / "dt.cc"
     phase_events = read_phase_dat(phase_path) if phase_path.exists() else {}
     stations = read_station_dat(station_path)
     velocity_model = read_velocity_model(velocity_model_csv)
@@ -2193,6 +2243,14 @@ def create_quality_report(
         bootstrap_uncertainty_path
     )
     shifts = location_shift_rows(original, relocated)
+    differential_event_pairs = set()
+    differential_event_pairs.update(read_differential_event_pairs(dt_ct_path))
+    differential_event_pairs.update(read_differential_event_pairs(dt_cc_path))
+    paired_distance_rows = paired_event_distance_rows(
+        original,
+        relocated,
+        differential_event_pairs,
+    )
 
     pick_original = []
     pick_relocated = []
@@ -2257,8 +2315,15 @@ def create_quality_report(
     )
 
     raw = {
-        "interevent_original_km": inter_event_distances(original),
-        "interevent_relocated_km": inter_event_distances(relocated),
+        "paired_event_original_distance_km": [
+            row["original_distance_km"] for row in paired_distance_rows
+        ],
+        "paired_event_relocated_distance_km": [
+            row["relocated_distance_km"] for row in paired_distance_rows
+        ],
+        "paired_event_distance_change_km": [
+            row["distance_change_km"] for row in paired_distance_rows
+        ],
         "nearest_original_km": nearest_neighbor_distances(original),
         "nearest_relocated_km": nearest_neighbor_distances(relocated),
         "horizontal_shift_km": [row["horizontal_shift_km"] for row in shifts],
@@ -2300,8 +2365,13 @@ def create_quality_report(
 
     summary_rows = []
     summary_items = {
-        "interevent_original_km": raw["interevent_original_km"],
-        "interevent_relocated_km": raw["interevent_relocated_km"],
+        "paired_event_original_distance_km": raw[
+            "paired_event_original_distance_km"
+        ],
+        "paired_event_relocated_distance_km": raw[
+            "paired_event_relocated_distance_km"
+        ],
+        "paired_event_distance_change_km": raw["paired_event_distance_change_km"],
         "nearest_original_km": raw["nearest_original_km"],
         "nearest_relocated_km": raw["nearest_relocated_km"],
         "horizontal_shift_km": raw["horizontal_shift_km"],
@@ -2365,6 +2435,7 @@ def create_quality_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_rows(output_dir / "summary_metrics.csv", summary_rows)
     _write_rows(output_dir / "location_shifts.csv", shifts)
+    _write_rows(output_dir / "paired_event_distances.csv", paired_distance_rows)
     _write_rows(output_dir / "pick_residuals.csv", pick_rows)
     _write_rows(output_dir / "double_difference_residuals.csv", residual_rows)
     _write_rows(
