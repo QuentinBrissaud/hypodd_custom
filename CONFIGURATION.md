@@ -169,7 +169,7 @@ This section does not impose preset cluster boundaries. It only controls which Q
 
 ### `file`
 
-Path to a CSV file containing at least an event-id column and a cluster-label column. Relative paths are resolved from the HypoDDPy working directory.
+Path to a CSV file containing at least an event-id column and a cluster-label column. Relative paths are resolved from the directory where Python is run.
 
 Example:
 

@@ -1082,7 +1082,7 @@ class HypoDDRelocator(object):
 
         preset_file = self.preset_event_selection["file"]
         if not os.path.isabs(preset_file):
-            preset_file = os.path.join(self.working_dir, preset_file)
+            preset_file = os.path.abspath(preset_file)
         event_id_column = self.preset_event_selection["event_id_column"]
         cluster_column = self.preset_event_selection["cluster_column"]
 
