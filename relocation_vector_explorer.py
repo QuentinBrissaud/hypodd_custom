@@ -208,6 +208,7 @@ def plot_relocation_vectors(
     show_original=True,
     show_stations=True,
     show_cities=True,
+    show_roads=True,
     vector_alpha=0.45,
     marker_size=16,
     cmap=None,
@@ -235,6 +236,8 @@ def plot_relocation_vectors(
         cmap = "tab20" if _is_categorical(df[color_by]) else "viridis"
 
     _add_base_map(ax, df, stations, projection, transform)
+    if show_roads:
+        _add_roads(ax, projection, transform)
     _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
 
     if show_original:
@@ -292,20 +295,36 @@ def create_relocation_vector_interface(
     Use `%matplotlib widget` before calling this function if you want the map
     toolbar to support zooming and panning inside the notebook.
     """
-    try:
-        import ipywidgets as widgets
-        from IPython.display import clear_output, display
-    except ImportError as exc:
-        raise ImportError(
-            "ipywidgets is required for the dropdown interface. "
-            "You can still call plot_relocation_vectors() directly."
-        ) from exc
-
     df = load_relocation_vector_dataframe(path)
     stations = load_station_dataframe(path)
     color_columns = available_color_columns(df)
     if default_color_by not in color_columns:
         default_color_by = color_columns[0]
+
+    try:
+        import ipywidgets as widgets
+        from IPython.display import clear_output, display
+    except ImportError:
+        fig, ax, scatter = plot_relocation_vectors(
+            df,
+            stations=stations,
+            color_by=default_color_by,
+            use_cartopy=use_cartopy,
+        )
+        plt.show()
+        print(
+            "ipywidgets is not installed, so the dropdown interface is disabled. "
+            "Use plot_relocation_vectors(df, stations=stations, color_by=...) "
+            "to change colors manually."
+        )
+        return {
+            "data": df,
+            "stations": stations,
+            "figure": fig,
+            "axes": ax,
+            "scatter": scatter,
+            "color_columns": color_columns,
+        }
 
     color_dropdown = widgets.Dropdown(
         options=color_columns,
@@ -315,6 +334,7 @@ def create_relocation_vector_interface(
     original_checkbox = widgets.Checkbox(value=True, description="Original")
     stations_checkbox = widgets.Checkbox(value=True, description="Stations")
     cities_checkbox = widgets.Checkbox(value=True, description="Cities")
+    roads_checkbox = widgets.Checkbox(value=True, description="Roads")
     output = widgets.Output()
 
     def redraw(*_):
@@ -328,6 +348,7 @@ def create_relocation_vector_interface(
                 show_original=original_checkbox.value,
                 show_stations=stations_checkbox.value,
                 show_cities=cities_checkbox.value,
+                show_roads=roads_checkbox.value,
             )
             plt.show()
 
@@ -336,11 +357,18 @@ def create_relocation_vector_interface(
         original_checkbox,
         stations_checkbox,
         cities_checkbox,
+        roads_checkbox,
     ]:
         widget.observe(redraw, names="value")
 
     controls = widgets.HBox(
-        [color_dropdown, original_checkbox, stations_checkbox, cities_checkbox]
+        [
+            color_dropdown,
+            original_checkbox,
+            stations_checkbox,
+            cities_checkbox,
+            roads_checkbox,
+        ]
     )
     display(widgets.VBox([controls, output]))
     redraw()
@@ -505,6 +533,34 @@ def _add_base_map(ax, df, stations, projection, transform):
         )
     except Exception:
         pass
+
+
+def _add_roads(ax, projection, transform, resolution="10m"):
+    """
+    Add Natural Earth roads when Cartopy is active and the dataset is available.
+    """
+    if projection is None:
+        return
+    try:
+        import cartopy.io.shapereader as shpreader
+
+        roads_shp = shpreader.natural_earth(
+            resolution=resolution,
+            category="cultural",
+            name="roads",
+        )
+        roads = shpreader.Reader(roads_shp)
+        ax.add_geometries(
+            roads.geometries(),
+            crs=transform,
+            facecolor="none",
+            edgecolor="gray",
+            alpha=0.5,
+            linewidth=0.5,
+            zorder=1.5,
+        )
+    except Exception:
+        return
 
 
 def _data_extent(df, stations):
