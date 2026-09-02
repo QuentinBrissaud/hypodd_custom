@@ -609,16 +609,9 @@ def _transform_kwargs(transform):
 
 def _format_axes(ax, projection):
     if projection is not None:
-        gl = ax.gridlines(
-            draw_labels=True,
-            linewidth=0.3,
-            color="0.5",
-            alpha=0.5,
-            linestyle="--",
-        )
+        gl = ax.gridlines(draw_labels=True, linewidth=0)
         gl.top_labels = False
         gl.right_labels = False
         return
-    ax.grid(True, linewidth=0.3, color="0.5", alpha=0.5, linestyle="--")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
