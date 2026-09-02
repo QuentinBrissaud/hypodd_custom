@@ -47,6 +47,19 @@ def _normalize_cc_backend(cc_backend):
     return cc_backend
 
 
+def _event_id_aliases(event_id):
+    """
+    Return accepted string aliases for a QuakeML event resource id.
+    """
+    event_id = str(event_id)
+    aliases = {event_id}
+    stripped = event_id.rstrip("/")
+    aliases.add(stripped)
+    aliases.add(stripped.split("/")[-1])
+    aliases.add(stripped.rstrip(":").split(":")[-1])
+    return aliases
+
+
 def _numpy_cache_xcorr_pick_correction(
     pick_1_time,
     trace_1,
@@ -1124,9 +1137,14 @@ class HypoDDRelocator(object):
         filtered_events = []
         for event in self.events:
             event_id = event["event_id"]
-            if event_id not in selected_events:
+            matching_event_id = None
+            for event_id_alias in _event_id_aliases(event_id):
+                if event_id_alias in selected_events:
+                    matching_event_id = event_id_alias
+                    break
+            if matching_event_id is None:
                 continue
-            event["preset_cluster"] = selected_events[event_id]
+            event["preset_cluster"] = selected_events[matching_event_id]
             filtered_events.append(event)
         self.events = filtered_events
 
