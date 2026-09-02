@@ -616,6 +616,8 @@ class HypoDDRelocator(object):
             section = parser["preset_events"]
             preset_file = section.get("file", "").strip()
             if preset_file:
+                if not os.path.isabs(preset_file):
+                    preset_file = os.path.abspath(preset_file)
                 self.preset_event_selection = {
                     "file": preset_file,
                     "event_id_column": section.get(
