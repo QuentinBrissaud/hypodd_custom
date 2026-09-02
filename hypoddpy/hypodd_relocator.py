@@ -1,5 +1,6 @@
 import copy
 import configparser
+import csv
 import fnmatch
 import glob
 import json
@@ -343,6 +344,7 @@ class HypoDDRelocator(object):
         # Dictionary to store forced configuration values.
         self.forced_configuration_values = {}
         self.compiler_configuration_values = {}
+        self.preset_event_selection = None
 
         # Configure the paths.
         self._configure_paths()
@@ -375,6 +377,7 @@ class HypoDDRelocator(object):
         self._parse_station_files()
         self._write_station_input_file()
         self._read_event_information()
+        self._apply_preset_event_selection()
         self._write_ph2dt_inp_file()
         self._create_event_id_map()
         self._write_catalog_input_file()
@@ -523,6 +526,9 @@ class HypoDDRelocator(object):
                 cc_min_allowed_cross_corr_coeff, cc_p_phase_weighting,
                 cc_s_phase_weighting
 
+            [preset_events]
+                file, event_id_column, cluster_column
+
             [ph2dt]
                 MINWGHT, MAXDIST, MAXSEP, MAXNGH, MINLNK, MINOBS, MAXOBS
 
@@ -605,6 +611,20 @@ class HypoDDRelocator(object):
                 self.compiler_configuration_values[key.upper()] = int(
                     value.strip()
                 )
+
+        if parser.has_section("preset_events"):
+            section = parser["preset_events"]
+            preset_file = section.get("file", "").strip()
+            if preset_file:
+                self.preset_event_selection = {
+                    "file": preset_file,
+                    "event_id_column": section.get(
+                        "event_id_column", "event_id"
+                    ).strip(),
+                    "cluster_column": section.get(
+                        "cluster_column", "dbscan_cluster"
+                    ).strip(),
+                }
 
         for section_name in ["ph2dt", "hypodd"]:
             if not parser.has_section(section_name):
@@ -1047,6 +1067,76 @@ class HypoDDRelocator(object):
         self.log(
             ("%i picks discarded because of " % discarded_picks)
             + "unavailable station information."
+        )
+
+    def _apply_preset_event_selection(self):
+        """
+        Keep only events listed in the optional preset event CSV file.
+
+        The preset cluster value is retained as metadata only. It is not used
+        to filter event pairs, so ph2dt/HypoDD can still connect events across
+        different preset clusters when the observations support it.
+        """
+        if self.preset_event_selection is None:
+            return
+
+        preset_file = self.preset_event_selection["file"]
+        if not os.path.isabs(preset_file):
+            preset_file = os.path.join(self.working_dir, preset_file)
+        event_id_column = self.preset_event_selection["event_id_column"]
+        cluster_column = self.preset_event_selection["cluster_column"]
+
+        if not os.path.exists(preset_file):
+            msg = "Preset event file does not exist: %s" % preset_file
+            raise HypoDDException(msg)
+
+        selected_events = {}
+        with open(preset_file, "r", newline="", encoding="utf-8-sig") as open_file:
+            reader = csv.DictReader(open_file)
+            if reader.fieldnames is None:
+                msg = "Preset event file has no header row: %s" % preset_file
+                raise HypoDDException(msg)
+            if event_id_column not in reader.fieldnames:
+                msg = (
+                    "Preset event file %s does not contain event id column %s."
+                    % (preset_file, event_id_column)
+                )
+                raise HypoDDException(msg)
+            if cluster_column not in reader.fieldnames:
+                msg = (
+                    "Preset event file %s does not contain cluster column %s."
+                    % (preset_file, cluster_column)
+                )
+                raise HypoDDException(msg)
+            for row in reader:
+                event_id = row.get(event_id_column, "").strip()
+                if not event_id:
+                    continue
+                selected_events[event_id] = row.get(cluster_column, "").strip()
+
+        if not selected_events:
+            msg = "Preset event file contains no event ids: %s" % preset_file
+            raise HypoDDException(msg)
+
+        old_event_count = len(self.events)
+        filtered_events = []
+        for event in self.events:
+            event_id = event["event_id"]
+            if event_id not in selected_events:
+                continue
+            event["preset_cluster"] = selected_events[event_id]
+            filtered_events.append(event)
+        self.events = filtered_events
+
+        if len(self.events) < 2:
+            msg = (
+                "Preset event selection left %i events; at least 2 are required."
+                % len(self.events)
+            )
+            raise HypoDDException(msg)
+        self.log(
+            "Applied preset event selection from %s: kept %i/%i events."
+            % (preset_file, len(self.events), old_event_count)
         )
 
     def _create_event_id_map(self):
@@ -1590,6 +1680,7 @@ class HypoDDRelocator(object):
         self._parse_station_files()
         self._write_station_input_file()
         self._read_event_information()
+        self._apply_preset_event_selection()
         self._write_ph2dt_inp_file()
         self._create_event_id_map()
         self._write_catalog_input_file()

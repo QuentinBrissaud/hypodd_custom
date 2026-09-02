@@ -161,6 +161,34 @@ cc_p_phase_weighting = P:1.0
 cc_s_phase_weighting = S:1.0
 ```
 
+## `[preset_events]`
+
+Optional event-selection file applied before `ph2dt` builds event pairs.
+
+This section does not impose preset cluster boundaries. It only controls which QuakeML events are allowed into the relocation problem. After filtering, `ph2dt` and HypoDD can still connect retained events across different preset cluster labels when the observations satisfy the normal graph thresholds.
+
+### `file`
+
+Path to a CSV file containing at least an event-id column and a cluster-label column. Relative paths are resolved from the HypoDDPy working directory.
+
+Example:
+
+```csv
+event_id,dbscan_cluster
+smi:local/event/abc,0
+smi:local/event/def,1
+```
+
+### `event_id_column`
+
+CSV column containing the QuakeML event resource id. Default: `event_id`.
+
+### `cluster_column`
+
+CSV column containing the preset cluster label. Default: `dbscan_cluster`.
+
+The value is retained on the in-memory event records as `preset_cluster` for bookkeeping, but it is not used to filter event pairs.
+
 ## `[ph2dt]`
 
 These parameters control `ph2dt`, the program that builds catalog differential-time pairs from event picks.
