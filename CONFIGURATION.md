@@ -165,7 +165,7 @@ cc_s_phase_weighting = S:1.0
 
 Optional event-selection file applied before `ph2dt` builds event pairs.
 
-This section does not impose preset cluster boundaries. It only controls which QuakeML events are allowed into the relocation problem. After filtering, `ph2dt` and HypoDD can still connect retained events across different preset cluster labels when the observations satisfy the normal graph thresholds.
+This section also imposes hard preset cluster boundaries. After `ph2dt` creates `dt.ct`, HypoDDPy removes every event-pair block whose two events have different preset cluster labels. When cross correlation is enabled or an existing `dt.cc` is reused, the same filter is applied to `dt.cc` before HypoDD runs. HypoDD can split a preset cluster if the graph is not connected, but it cannot merge different preset clusters through catalog or cross-correlation links.
 
 ### `file`
 
@@ -187,7 +187,7 @@ CSV column containing the QuakeML event resource id. Default: `event_id`.
 
 CSV column containing the preset cluster label. Default: `dbscan_cluster`.
 
-The value is retained on the in-memory event records as `preset_cluster` for bookkeeping, but it is not used to filter event pairs.
+The value is retained on the in-memory event records as `preset_cluster` and used to filter `dt.ct` and `dt.cc` event-pair blocks. Empty cluster labels are not treated as a shared cluster.
 
 ## `[ph2dt]`
 

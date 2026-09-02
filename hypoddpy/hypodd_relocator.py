@@ -396,10 +396,12 @@ class HypoDDRelocator(object):
         self._write_catalog_input_file()
         self._compile_hypodd()
         self._run_ph2dt()
+        self._filter_dt_file_by_preset_clusters("dt.ct")
         self._apply_event_fix_to_event_selection()
         if self.use_cross_correlation:
             self._parse_waveform_files()
             self._cross_correlate_picks(outfile=output_cross_correlation_file)
+            self._filter_dt_file_by_preset_clusters("dt.cc")
         self._write_hypoDD_inp_file()
         self._run_hypodd()
         self._create_output_event_file()
@@ -1088,9 +1090,8 @@ class HypoDDRelocator(object):
         """
         Keep only events listed in the optional preset event CSV file.
 
-        The preset cluster value is retained as metadata only. It is not used
-        to filter event pairs, so ph2dt/HypoDD can still connect events across
-        different preset clusters when the observations support it.
+        The preset cluster value is used later as a hard graph boundary for
+        dt.ct and dt.cc event-pair blocks.
         """
         if self.preset_event_selection is None:
             return
@@ -1158,6 +1159,21 @@ class HypoDDRelocator(object):
             "Applied preset event selection from %s: kept %i/%i events."
             % (preset_file, len(self.events), old_event_count)
         )
+
+    def _preset_cluster_by_internal_event_id(self):
+        """
+        Return preset cluster labels keyed by HypoDD's numeric event ids.
+        """
+        cluster_by_event = {}
+        if self.preset_event_selection is None:
+            return cluster_by_event
+        for event in self.events:
+            cluster = event.get("preset_cluster")
+            if cluster in ("", None):
+                continue
+            event_number = self.event_map[event["event_id"]]
+            cluster_by_event[int(event_number)] = str(cluster)
+        return cluster_by_event
 
     def _create_event_id_map(self):
         """
@@ -1570,6 +1586,90 @@ class HypoDDRelocator(object):
             % (max_time_sep_days, removed_pairs, total_pairs, removed_rows)
         )
 
+    def _filter_dt_file_by_preset_clusters(self, filename):
+        """
+        Remove dt.ct/dt.cc event-pair blocks crossing preset cluster labels.
+        """
+        if self.preset_event_selection is None:
+            return
+
+        cluster_by_event = self._preset_cluster_by_internal_event_id()
+        if not cluster_by_event:
+            msg = (
+                "Preset event selection is active, but no selected events have "
+                "a non-empty preset cluster value."
+            )
+            raise HypoDDException(msg)
+
+        dt_file_path = os.path.join(self.paths["input_files"], filename)
+        if not os.path.exists(dt_file_path):
+            return
+
+        kept_lines = []
+        current_header = None
+        current_rows = []
+        current_keep = True
+        total_pairs = 0
+        kept_pairs = 0
+        removed_pairs = 0
+        removed_rows = 0
+
+        def flush_current():
+            nonlocal kept_pairs, removed_pairs, removed_rows
+            if current_header is None:
+                return
+            if current_keep:
+                kept_lines.append(current_header)
+                kept_lines.extend(current_rows)
+                kept_pairs += 1
+            else:
+                removed_pairs += 1
+                removed_rows += len(current_rows)
+
+        with open(dt_file_path, "r") as open_file:
+            for line in open_file:
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] == "#":
+                    flush_current()
+                    current_header = line.rstrip("\n")
+                    current_rows = []
+                    current_keep = False
+                    total_pairs += 1
+                    if len(parts) >= 3:
+                        event_id_1 = int(parts[1])
+                        event_id_2 = int(parts[2])
+                        cluster_1 = cluster_by_event.get(event_id_1)
+                        cluster_2 = cluster_by_event.get(event_id_2)
+                        current_keep = (
+                            cluster_1 is not None
+                            and cluster_2 is not None
+                            and cluster_1 == cluster_2
+                        )
+                    continue
+                current_rows.append(line.rstrip("\n"))
+        flush_current()
+
+        if total_pairs and kept_pairs == 0:
+            msg = (
+                "Preset cluster filtering removed every event pair from %s. "
+                "Check that the preset event ids match the QuakeML event ids "
+                "and that each selected event has the intended cluster label."
+                % dt_file_path
+            )
+            raise HypoDDException(msg)
+
+        with open(dt_file_path, "w") as open_file:
+            open_file.write("\n".join(kept_lines))
+            if kept_lines:
+                open_file.write("\n")
+        self.log(
+            "Filtered %s by preset clusters: kept %i/%i event pairs, removed "
+            "%i event pairs and %i observations."
+            % (filename, kept_pairs, total_pairs, removed_pairs, removed_rows)
+        )
+
     def _parse_waveform_files(self):
         """
         Read all specified waveform files and store information about them in
@@ -1706,6 +1806,7 @@ class HypoDDRelocator(object):
         self._write_catalog_input_file()
         self._compile_hypodd()
         self._run_ph2dt()
+        self._filter_dt_file_by_preset_clusters("dt.ct")
         self._apply_event_fix_to_event_selection()
         self._parse_waveform_files()
 
@@ -1718,6 +1819,7 @@ class HypoDDRelocator(object):
                 shutil.rmtree(cc_dir)
 
         self._cross_correlate_picks(outfile=output_cross_correlation_file)
+        self._filter_dt_file_by_preset_clusters("dt.cc")
         if output_cross_correlation_diagnostics_file:
             self.save_cross_correlation_diagnostics(
                 output_cross_correlation_diagnostics_file
