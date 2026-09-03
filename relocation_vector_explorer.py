@@ -521,7 +521,7 @@ def _add_base_map(ax, df, stations, projection, transform):
         ax.add_feature(cfeature.BORDERS, linewidth=0.8)
         ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
         ax.add_feature(cfeature.LAKES, alpha=0.5)
-        ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45")
+        ax.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="0.45", color='blue')
         ax.add_feature(
             cfeature.NaturalEarthFeature(
                 "cultural",
