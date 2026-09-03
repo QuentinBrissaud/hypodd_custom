@@ -208,6 +208,7 @@ def plot_relocation_vectors(
     use_cartopy=True,
     basemap="natural_earth",
     osm_zoom=9,
+    event_view="both",
     show_original=True,
     show_stations=True,
     show_cities=True,
@@ -218,11 +219,15 @@ def plot_relocation_vectors(
     cmap=None,
 ):
     """
-    Plot original-to-relocated vectors and color relocated events by a column.
+    Plot original, relocated, or original-to-relocated event positions.
 
     The returned Matplotlib figure can be zoomed/panned with the notebook
     toolbar when using an interactive backend such as `%matplotlib widget`.
     """
+    event_view = _normalize_event_view(event_view)
+    if show_original is False and event_view == "both":
+        event_view = "relocated"
+
     projection, transform, basemap = _cartopy_projection(use_cartopy, basemap)
     if ax is None:
         if projection is None:
@@ -242,24 +247,26 @@ def plot_relocation_vectors(
     _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
         _add_roads(ax, projection, transform)
-    _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
+    if event_view == "both":
+        _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
 
-    if show_original:
-        ax.scatter(
-            df["original_longitude"],
-            df["original_latitude"],
-            s=marker_size,
-            marker="x",
-            c="0.25",
-            linewidths=0.7,
-            label="Original events",
-            zorder=4,
-            **_transform_kwargs(transform),
+    scatter = None
+    if event_view in ["both", "original"]:
+        original_colors = "0.25" if event_view == "both" else None
+        scatter = _plot_original_events(
+            ax,
+            df,
+            color_by,
+            cmap,
+            transform,
+            marker_size,
+            colors=original_colors,
         )
 
-    scatter = _plot_relocated_events(
-        ax, df, color_by, cmap, transform, marker_size
-    )
+    if event_view in ["both", "relocated"]:
+        scatter = _plot_relocated_events(
+            ax, df, color_by, cmap, transform, marker_size
+        )
 
     if show_stations and stations is not None and len(stations):
         ax.scatter(
@@ -282,9 +289,13 @@ def plot_relocation_vectors(
     if show_scale_bar:
         _add_dynamic_scale_bar(ax, transform)
     _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap)
+    event_title = {
+        "both": "Event Relocation Vectors",
+        "original": "Original Events",
+        "relocated": "Relocated Events",
+    }[event_view]
     ax.set_title(
-        "Event Relocation Vectors (%i matched events), colored by %s"
-        % (len(df), color_by)
+        "%s (%i matched events), colored by %s" % (event_title, len(df), color_by)
     )
     fig.tight_layout()
     return fig, ax, scatter
@@ -351,7 +362,15 @@ def create_relocation_vector_interface(
         value=default_basemap,
         description="Basemap",
     )
-    original_checkbox = widgets.Checkbox(value=True, description="Original")
+    event_view_dropdown = widgets.Dropdown(
+        options=[
+            ("Both", "both"),
+            ("Original", "original"),
+            ("Relocated", "relocated"),
+        ],
+        value="both",
+        description="Events",
+    )
     stations_checkbox = widgets.Checkbox(value=True, description="Stations")
     cities_checkbox = widgets.Checkbox(value=True, description="Cities")
     roads_checkbox = widgets.Checkbox(value=True, description="Roads")
@@ -368,7 +387,7 @@ def create_relocation_vector_interface(
                 use_cartopy=use_cartopy,
                 basemap=basemap_dropdown.value,
                 osm_zoom=osm_zoom,
-                show_original=original_checkbox.value,
+                event_view=event_view_dropdown.value,
                 show_stations=stations_checkbox.value,
                 show_cities=cities_checkbox.value,
                 show_roads=roads_checkbox.value,
@@ -378,7 +397,7 @@ def create_relocation_vector_interface(
 
     for widget in [
         color_dropdown,
-        original_checkbox,
+        event_view_dropdown,
         stations_checkbox,
         cities_checkbox,
         roads_checkbox,
@@ -391,7 +410,7 @@ def create_relocation_vector_interface(
         [
             color_dropdown,
             basemap_dropdown,
-            original_checkbox,
+            event_view_dropdown,
             stations_checkbox,
             cities_checkbox,
             roads_checkbox,
@@ -405,6 +424,7 @@ def create_relocation_vector_interface(
         "stations": stations,
         "color_dropdown": color_dropdown,
         "basemap_dropdown": basemap_dropdown,
+        "event_view_dropdown": event_view_dropdown,
         "output": output,
     }
 
@@ -459,6 +479,31 @@ def _normalize_basemap(basemap):
     return aliases[basemap]
 
 
+def _normalize_event_view(event_view):
+    if event_view is None:
+        return "both"
+    event_view = str(event_view).strip().lower().replace("-", "_")
+    aliases = {
+        "both": "both",
+        "all": "both",
+        "original_and_relocated": "both",
+        "original": "original",
+        "orig": "original",
+        "starting": "original",
+        "start": "original",
+        "relocated": "relocated",
+        "updated": "relocated",
+        "update": "relocated",
+        "final": "relocated",
+    }
+    if event_view not in aliases:
+        raise ValueError(
+            "Unsupported event_view %s. Use 'both', 'original', or 'relocated'."
+            % event_view
+        )
+    return aliases[event_view]
+
+
 def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
     colors, _, _ = _colors_for_column(df[color_by], cmap, color_by)
     for (_, row), color in zip(df.iterrows(), colors):
@@ -471,6 +516,52 @@ def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
             zorder=2,
             **_transform_kwargs(transform),
         )
+
+
+def _plot_original_events(
+    ax,
+    df,
+    color_by,
+    cmap,
+    transform,
+    marker_size,
+    colors=None,
+):
+    if colors is not None:
+        return ax.scatter(
+            df["original_longitude"],
+            df["original_latitude"],
+            s=marker_size,
+            marker="x",
+            c=colors,
+            linewidths=0.7,
+            zorder=4,
+            **_transform_kwargs(transform),
+        )
+    colors, values, norm = _colors_for_column(df[color_by], cmap, color_by)
+    if _is_categorical(df[color_by], color_by):
+        return ax.scatter(
+            df["original_longitude"],
+            df["original_latitude"],
+            s=marker_size,
+            marker="x",
+            c=colors,
+            linewidths=0.7,
+            zorder=4,
+            **_transform_kwargs(transform),
+        )
+    return ax.scatter(
+        df["original_longitude"],
+        df["original_latitude"],
+        s=marker_size,
+        marker="x",
+        c=values,
+        cmap=cmap,
+        norm=norm,
+        linewidths=0.7,
+        zorder=4,
+        **_transform_kwargs(transform),
+    )
 
 
 def _plot_relocated_events(ax, df, color_by, cmap, transform, marker_size):
@@ -542,30 +633,8 @@ def _colors_for_column(series, cmap, color_by=None):
 
 def _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap):
     if _is_categorical(df[color_by], color_by):
-        import matplotlib.lines as mlines
-
-        categories = sorted(df[color_by].dropna().unique(), key=str)
-        by_category = _category_color_lookup(categories, cmap)
-        handles = [
-            mlines.Line2D(
-                [],
-                [],
-                color=by_category[category],
-                marker="o",
-                linestyle="None",
-                markersize=5,
-                label="%s" % category,
-            )
-            for category in categories[:16]
-        ]
-        if len(categories) > 16:
-            handles.append(
-                mlines.Line2D(
-                    [], [], color="none", label="+%i more" % (len(categories) - 16)
-                )
-            )
-        if handles:
-            ax.legend(handles=handles, title=color_by, loc="lower left", fontsize=8)
+        return
+    if scatter is None:
         return
     colorbar = fig.colorbar(scatter, ax=ax, fraction=0.035, pad=0.02)
     colorbar.set_label(color_by)
