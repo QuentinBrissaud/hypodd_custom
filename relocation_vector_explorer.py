@@ -13,6 +13,7 @@ files that are used to build ukraine_relocation_vectors_map.png.
 """
 
 from pathlib import Path
+import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -205,10 +206,13 @@ def plot_relocation_vectors(
     color_by="cluster_id",
     ax=None,
     use_cartopy=True,
+    basemap="natural_earth",
+    osm_zoom=9,
     show_original=True,
     show_stations=True,
     show_cities=True,
     show_roads=True,
+    show_scale_bar=True,
     vector_alpha=0.45,
     marker_size=16,
     cmap=None,
@@ -219,7 +223,7 @@ def plot_relocation_vectors(
     The returned Matplotlib figure can be zoomed/panned with the notebook
     toolbar when using an interactive backend such as `%matplotlib widget`.
     """
-    projection, transform = _cartopy_projection(use_cartopy)
+    projection, transform, basemap = _cartopy_projection(use_cartopy, basemap)
     if ax is None:
         if projection is None:
             fig, ax = plt.subplots(figsize=(9, 8))
@@ -235,7 +239,7 @@ def plot_relocation_vectors(
     if cmap is None:
         cmap = "tab20" if _is_categorical(df[color_by]) else "viridis"
 
-    _add_base_map(ax, df, stations, projection, transform)
+    _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
         _add_roads(ax, projection, transform)
     _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
@@ -275,6 +279,8 @@ def plot_relocation_vectors(
         _add_cities(ax, df, stations, transform)
 
     _format_axes(ax, projection)
+    if show_scale_bar:
+        _add_dynamic_scale_bar(ax, transform)
     _add_color_legend_or_bar(fig, ax, scatter, df, color_by)
     ax.set_title(
         "Event Relocation Vectors (%i matched events), colored by %s"
@@ -288,6 +294,8 @@ def create_relocation_vector_interface(
     path,
     default_color_by="cluster_id",
     use_cartopy=True,
+    default_basemap="natural_earth",
+    osm_zoom=9,
 ):
     """
     Create an ipywidgets interface for changing event colors in a notebook.
@@ -300,6 +308,7 @@ def create_relocation_vector_interface(
     color_columns = available_color_columns(df)
     if default_color_by not in color_columns:
         default_color_by = color_columns[0]
+    default_basemap = _normalize_basemap(default_basemap)
 
     try:
         import ipywidgets as widgets
@@ -310,6 +319,8 @@ def create_relocation_vector_interface(
             stations=stations,
             color_by=default_color_by,
             use_cartopy=use_cartopy,
+            basemap=default_basemap,
+            osm_zoom=osm_zoom,
         )
         plt.show()
         print(
@@ -331,10 +342,20 @@ def create_relocation_vector_interface(
         value=default_color_by,
         description="Color by",
     )
+    basemap_dropdown = widgets.Dropdown(
+        options=[
+            ("Natural Earth", "natural_earth"),
+            ("OpenStreetMap", "osm"),
+            ("None", "none"),
+        ],
+        value=default_basemap,
+        description="Basemap",
+    )
     original_checkbox = widgets.Checkbox(value=True, description="Original")
     stations_checkbox = widgets.Checkbox(value=True, description="Stations")
     cities_checkbox = widgets.Checkbox(value=True, description="Cities")
     roads_checkbox = widgets.Checkbox(value=True, description="Roads")
+    scale_bar_checkbox = widgets.Checkbox(value=True, description="Scale bar")
     output = widgets.Output()
 
     def redraw(*_):
@@ -345,10 +366,13 @@ def create_relocation_vector_interface(
                 stations=stations,
                 color_by=color_dropdown.value,
                 use_cartopy=use_cartopy,
+                basemap=basemap_dropdown.value,
+                osm_zoom=osm_zoom,
                 show_original=original_checkbox.value,
                 show_stations=stations_checkbox.value,
                 show_cities=cities_checkbox.value,
                 show_roads=roads_checkbox.value,
+                show_scale_bar=scale_bar_checkbox.value,
             )
             plt.show()
 
@@ -358,16 +382,20 @@ def create_relocation_vector_interface(
         stations_checkbox,
         cities_checkbox,
         roads_checkbox,
+        scale_bar_checkbox,
     ]:
         widget.observe(redraw, names="value")
+    basemap_dropdown.observe(redraw, names="value")
 
     controls = widgets.HBox(
         [
             color_dropdown,
+            basemap_dropdown,
             original_checkbox,
             stations_checkbox,
             cities_checkbox,
             roads_checkbox,
+            scale_bar_checkbox,
         ]
     )
     display(widgets.VBox([controls, output]))
@@ -376,6 +404,7 @@ def create_relocation_vector_interface(
         "data": df,
         "stations": stations,
         "color_dropdown": color_dropdown,
+        "basemap_dropdown": basemap_dropdown,
         "output": output,
     }
 
@@ -387,15 +416,47 @@ def _approx_horizontal_distance_km(lat1, lon1, lat2, lon2):
     return np.sqrt(dx * dx + dy * dy)
 
 
-def _cartopy_projection(use_cartopy):
+def _cartopy_projection(use_cartopy, basemap):
     if not use_cartopy:
-        return None, None
+        return None, None, "none"
     try:
         import cartopy.crs as ccrs
     except ImportError:
-        return None, None
-    projection = ccrs.PlateCarree()
-    return projection, projection
+        return None, None, "none"
+    basemap = _normalize_basemap(basemap)
+    transform = ccrs.PlateCarree()
+    if basemap == "osm":
+        try:
+            import cartopy.io.img_tiles as cimgt
+
+            tiler = cimgt.OSM()
+            return tiler.crs, transform, "osm"
+        except Exception:
+            return transform, transform, "natural_earth"
+    return transform, transform, basemap
+
+
+def _normalize_basemap(basemap):
+    if basemap is None:
+        return "natural_earth"
+    basemap = str(basemap).strip().lower().replace("-", "_")
+    aliases = {
+        "naturalearth": "natural_earth",
+        "natural_earth": "natural_earth",
+        "ne": "natural_earth",
+        "osm": "osm",
+        "openstreetmap": "osm",
+        "open_street_map": "osm",
+        "none": "none",
+        "off": "none",
+        "false": "none",
+    }
+    if basemap not in aliases:
+        raise ValueError(
+            "Unsupported basemap %s. Use 'natural_earth', 'osm', or 'none'."
+            % basemap
+        )
+    return aliases[basemap]
 
 
 def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
@@ -506,13 +567,23 @@ def _add_color_legend_or_bar(fig, ax, scatter, df, color_by):
     colorbar.set_label(color_by)
 
 
-def _add_base_map(ax, df, stations, projection, transform):
+def _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom):
     extent = _data_extent(df, stations)
     if projection is None:
         ax.set_xlim(extent[0], extent[1])
         ax.set_ylim(extent[2], extent[3])
         return
     ax.set_extent(extent, crs=transform)
+    if basemap == "none":
+        return
+    if basemap == "osm":
+        try:
+            import cartopy.io.img_tiles as cimgt
+
+            ax.add_image(cimgt.OSM(), osm_zoom)
+        except Exception:
+            pass
+        return
     try:
         import cartopy.feature as cfeature
 
@@ -606,6 +677,120 @@ def _transform_kwargs(transform):
     if transform is None:
         return {}
     return {"transform": transform}
+
+
+def _nice_scale_length_km(width_km):
+    target = width_km / 5.0
+    if target <= 0 or not math.isfinite(target):
+        return 1.0
+    exponent = math.floor(math.log10(target))
+    fraction = target / (10 ** exponent)
+    if fraction < 1.5:
+        nice = 1.0
+    elif fraction < 3.5:
+        nice = 2.0
+    elif fraction < 7.5:
+        nice = 5.0
+    else:
+        nice = 10.0
+    return nice * (10 ** exponent)
+
+
+def _current_extent_lonlat(ax, transform):
+    if transform is None:
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        return [min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)]
+    try:
+        return ax.get_extent(crs=transform)
+    except Exception:
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        return [min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)]
+
+
+def _remove_scale_bar_artists(ax):
+    for artist in list(getattr(ax, "_hypodd_scale_bar_artists", [])):
+        try:
+            artist.remove()
+        except ValueError:
+            pass
+    ax._hypodd_scale_bar_artists = []
+
+
+def _draw_scale_bar(ax, transform):
+    _remove_scale_bar_artists(ax)
+    lon_min, lon_max, lat_min, lat_max = _current_extent_lonlat(ax, transform)
+    lat_span = lat_max - lat_min
+    lon_span = lon_max - lon_min
+    if lat_span <= 0 or lon_span <= 0:
+        return
+
+    bar_lat = lat_min + 0.08 * lat_span
+    bar_lon = lon_min + 0.08 * lon_span
+    km_per_degree_lon = 111.32 * math.cos(math.radians(bar_lat))
+    if abs(km_per_degree_lon) < 1e-6:
+        return
+    width_km = lon_span * km_per_degree_lon
+    bar_km = _nice_scale_length_km(width_km)
+    bar_degrees = bar_km / km_per_degree_lon
+    if bar_degrees > 0.6 * lon_span:
+        bar_km = _nice_scale_length_km(width_km / 2.0)
+        bar_degrees = bar_km / km_per_degree_lon
+
+    y_offset = 0.012 * lat_span
+    text_y = bar_lat + 0.018 * lat_span
+    kwargs = _transform_kwargs(transform)
+    line = ax.plot(
+        [bar_lon, bar_lon + bar_degrees],
+        [bar_lat, bar_lat],
+        color="black",
+        linewidth=3.0,
+        solid_capstyle="butt",
+        zorder=20,
+        **kwargs,
+    )[0]
+    tick_1 = ax.plot(
+        [bar_lon, bar_lon],
+        [bar_lat - y_offset, bar_lat + y_offset],
+        color="black",
+        linewidth=2.0,
+        zorder=20,
+        **kwargs,
+    )[0]
+    tick_2 = ax.plot(
+        [bar_lon + bar_degrees, bar_lon + bar_degrees],
+        [bar_lat - y_offset, bar_lat + y_offset],
+        color="black",
+        linewidth=2.0,
+        zorder=20,
+        **kwargs,
+    )[0]
+    label = ax.text(
+        bar_lon + 0.5 * bar_degrees,
+        text_y,
+        "%g km" % bar_km,
+        ha="center",
+        va="bottom",
+        fontsize=8,
+        color="black",
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 1.5},
+        zorder=21,
+        **kwargs,
+    )
+    ax._hypodd_scale_bar_artists = [line, tick_1, tick_2, label]
+
+
+def _add_dynamic_scale_bar(ax, transform):
+    _draw_scale_bar(ax, transform)
+
+    def refresh_scale_bar(_):
+        _draw_scale_bar(ax, transform)
+        if ax.figure.canvas is not None:
+            ax.figure.canvas.draw_idle()
+
+    for signal in ["xlim_changed", "ylim_changed"]:
+        ax.callbacks.connect(signal, refresh_scale_bar)
 
 
 def _format_axes(ax, projection):
