@@ -460,7 +460,7 @@ def _normalize_basemap(basemap):
 
 
 def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
-    colors, _, _ = _colors_for_column(df[color_by], cmap)
+    colors, _, _ = _colors_for_column(df[color_by], cmap, color_by)
     for (_, row), color in zip(df.iterrows(), colors):
         ax.plot(
             [row["original_longitude"], row["relocated_longitude"]],
@@ -474,8 +474,8 @@ def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
 
 
 def _plot_relocated_events(ax, df, color_by, cmap, transform, marker_size):
-    colors, values, norm = _colors_for_column(df[color_by], cmap)
-    if _is_categorical(df[color_by]):
+    colors, values, norm = _colors_for_column(df[color_by], cmap, color_by)
+    if _is_categorical(df[color_by], color_by):
         return ax.scatter(
             df["relocated_longitude"],
             df["relocated_latitude"],
@@ -500,7 +500,9 @@ def _plot_relocated_events(ax, df, color_by, cmap, transform, marker_size):
     )
 
 
-def _is_categorical(series):
+def _is_categorical(series, color_by=None):
+    if color_by == "cluster_id":
+        return True
     pd = _require_pandas()
     if not pd.api.types.is_numeric_dtype(series):
         return True
@@ -511,20 +513,16 @@ def _is_categorical(series):
 
 
 def _default_colormap_for_column(series, color_by=None):
-    if color_by == "cluster_id" or _is_categorical(series):
+    if _is_categorical(series, color_by):
         return "tab10"
     return "viridis"
 
 
-def _colors_for_column(series, cmap):
+def _colors_for_column(series, cmap, color_by=None):
     pd = _require_pandas()
-    if _is_categorical(series):
+    if _is_categorical(series, color_by):
         categories = sorted(series.dropna().unique(), key=str)
-        color_map = plt.get_cmap(cmap)
-        by_category = {
-            category: color_map(index % color_map.N)
-            for index, category in enumerate(categories)
-        }
+        by_category = _category_color_lookup(categories, cmap)
         colors = [by_category.get(value, "0.55") for value in series]
         return colors, None, None
 
@@ -543,22 +541,22 @@ def _colors_for_column(series, cmap):
 
 
 def _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap):
-    if _is_categorical(df[color_by]):
+    if _is_categorical(df[color_by], color_by):
         import matplotlib.lines as mlines
 
-        color_map = plt.get_cmap(cmap)
         categories = sorted(df[color_by].dropna().unique(), key=str)
+        by_category = _category_color_lookup(categories, cmap)
         handles = [
             mlines.Line2D(
                 [],
                 [],
-                color=color_map(index % color_map.N),
+                color=by_category[category],
                 marker="o",
                 linestyle="None",
                 markersize=5,
                 label="%s" % category,
             )
-            for index, category in enumerate(categories[:16])
+            for category in categories[:16]
         ]
         if len(categories) > 16:
             handles.append(
@@ -571,6 +569,24 @@ def _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap):
         return
     colorbar = fig.colorbar(scatter, ax=ax, fraction=0.035, pad=0.02)
     colorbar.set_label(color_by)
+
+
+def _category_color_lookup(categories, cmap):
+    """
+    Return one discrete color assignment per category.
+    """
+    color_map = plt.get_cmap(cmap)
+    if len(categories) <= getattr(color_map, "N", 256):
+        return {
+            category: color_map(index % color_map.N)
+            for index, category in enumerate(categories)
+        }
+
+    sampled_map = plt.get_cmap("nipy_spectral")
+    return {
+        category: sampled_map((index + 0.5) / len(categories))
+        for index, category in enumerate(categories)
+    }
 
 
 def _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom):
