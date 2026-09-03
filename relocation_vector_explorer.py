@@ -237,7 +237,7 @@ def plot_relocation_vectors(
         raise ValueError("Unknown color column: %s" % color_by)
 
     if cmap is None:
-        cmap = "tab20" if _is_categorical(df[color_by]) else "viridis"
+        cmap = _default_colormap_for_column(df[color_by], color_by)
 
     _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
@@ -281,7 +281,7 @@ def plot_relocation_vectors(
     _format_axes(ax, projection)
     if show_scale_bar:
         _add_dynamic_scale_bar(ax, transform)
-    _add_color_legend_or_bar(fig, ax, scatter, df, color_by)
+    _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap)
     ax.set_title(
         "Event Relocation Vectors (%i matched events), colored by %s"
         % (len(df), color_by)
@@ -510,6 +510,12 @@ def _is_categorical(series):
     return False
 
 
+def _default_colormap_for_column(series, color_by=None):
+    if color_by == "cluster_id" or _is_categorical(series):
+        return "tab10"
+    return "viridis"
+
+
 def _colors_for_column(series, cmap):
     pd = _require_pandas()
     if _is_categorical(series):
@@ -536,11 +542,11 @@ def _colors_for_column(series, cmap):
     return colors, values, norm
 
 
-def _add_color_legend_or_bar(fig, ax, scatter, df, color_by):
+def _add_color_legend_or_bar(fig, ax, scatter, df, color_by, cmap):
     if _is_categorical(df[color_by]):
         import matplotlib.lines as mlines
 
-        color_map = plt.get_cmap("tab20")
+        color_map = plt.get_cmap(cmap)
         categories = sorted(df[color_by].dropna().unique(), key=str)
         handles = [
             mlines.Line2D(
