@@ -13,6 +13,7 @@ files that are used to build ukraine_relocation_vectors_map.png.
 """
 
 from pathlib import Path
+import json
 import math
 
 import matplotlib.pyplot as plt
@@ -170,6 +171,29 @@ def load_relocation_vector_dataframe(path):
     return df
 
 
+def load_conflict_boundaries(path, date_property="date"):
+    """
+    Load dated conflict-line geometries from a GeoJSON FeatureCollection.
+
+    The returned object is a dictionary keyed by date string. Each value is a
+    list of line coordinate sequences in lon/lat order.
+    """
+    path = Path(path).expanduser()
+    with path.open("r", encoding="utf-8-sig") as handle:
+        data = json.load(handle)
+    boundaries = {}
+    for feature in data.get("features", []):
+        properties = feature.get("properties") or {}
+        date = properties.get(date_property)
+        if date in ("", None):
+            continue
+        geometry = feature.get("geometry") or {}
+        for line in _geojson_geometry_lines(geometry):
+            if len(line) >= 2:
+                boundaries.setdefault(str(date), []).append(line)
+    return boundaries
+
+
 def available_color_columns(df):
     """
     Return columns that make sense for coloring relocated events.
@@ -214,6 +238,10 @@ def plot_relocation_vectors(
     show_cities=True,
     show_roads=True,
     show_scale_bar=True,
+    conflict_boundaries=None,
+    conflict_start_date=None,
+    conflict_end_date=None,
+    show_conflict_lines=True,
     vector_alpha=0.45,
     marker_size=16,
     cmap=None,
@@ -247,6 +275,14 @@ def plot_relocation_vectors(
     _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
         _add_roads(ax, projection, transform)
+    if show_conflict_lines and conflict_boundaries:
+        _add_conflict_boundaries(
+            ax,
+            conflict_boundaries,
+            conflict_start_date,
+            conflict_end_date,
+            transform,
+        )
     if event_view == "both":
         _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
 
@@ -307,6 +343,9 @@ def create_relocation_vector_interface(
     use_cartopy=True,
     default_basemap="natural_earth",
     osm_zoom=9,
+    conflict_geojson_path=None,
+    default_conflict_start_date=None,
+    default_conflict_end_date=None,
 ):
     """
     Create an ipywidgets interface for changing event colors in a notebook.
@@ -320,6 +359,16 @@ def create_relocation_vector_interface(
     if default_color_by not in color_columns:
         default_color_by = color_columns[0]
     default_basemap = _normalize_basemap(default_basemap)
+    conflict_boundaries = None
+    conflict_dates = []
+    if conflict_geojson_path:
+        conflict_boundaries = load_conflict_boundaries(conflict_geojson_path)
+        conflict_dates = sorted(conflict_boundaries)
+        if conflict_dates:
+            if default_conflict_start_date not in conflict_boundaries:
+                default_conflict_start_date = conflict_dates[0]
+            if default_conflict_end_date not in conflict_boundaries:
+                default_conflict_end_date = conflict_dates[-1]
 
     try:
         import ipywidgets as widgets
@@ -332,6 +381,9 @@ def create_relocation_vector_interface(
             use_cartopy=use_cartopy,
             basemap=default_basemap,
             osm_zoom=osm_zoom,
+            conflict_boundaries=conflict_boundaries,
+            conflict_start_date=default_conflict_start_date,
+            conflict_end_date=default_conflict_end_date,
         )
         plt.show()
         print(
@@ -375,6 +427,23 @@ def create_relocation_vector_interface(
     cities_checkbox = widgets.Checkbox(value=True, description="Cities")
     roads_checkbox = widgets.Checkbox(value=True, description="Roads")
     scale_bar_checkbox = widgets.Checkbox(value=True, description="Scale bar")
+    conflict_checkbox = widgets.Checkbox(
+        value=bool(conflict_boundaries),
+        description="Conflict lines",
+        disabled=not bool(conflict_boundaries),
+    )
+    conflict_start_dropdown = widgets.Dropdown(
+        options=conflict_dates if conflict_dates else [("No conflict file", None)],
+        value=default_conflict_start_date if conflict_dates else None,
+        description="From",
+        disabled=not bool(conflict_dates),
+    )
+    conflict_end_dropdown = widgets.Dropdown(
+        options=conflict_dates if conflict_dates else [("No conflict file", None)],
+        value=default_conflict_end_date if conflict_dates else None,
+        description="To",
+        disabled=not bool(conflict_dates),
+    )
     output = widgets.Output()
 
     def redraw(*_):
@@ -392,6 +461,10 @@ def create_relocation_vector_interface(
                 show_cities=cities_checkbox.value,
                 show_roads=roads_checkbox.value,
                 show_scale_bar=scale_bar_checkbox.value,
+                conflict_boundaries=conflict_boundaries,
+                conflict_start_date=conflict_start_dropdown.value,
+                conflict_end_date=conflict_end_dropdown.value,
+                show_conflict_lines=conflict_checkbox.value,
             )
             plt.show()
 
@@ -402,6 +475,9 @@ def create_relocation_vector_interface(
         cities_checkbox,
         roads_checkbox,
         scale_bar_checkbox,
+        conflict_checkbox,
+        conflict_start_dropdown,
+        conflict_end_dropdown,
     ]:
         widget.observe(redraw, names="value")
     basemap_dropdown.observe(redraw, names="value")
@@ -415,6 +491,9 @@ def create_relocation_vector_interface(
             cities_checkbox,
             roads_checkbox,
             scale_bar_checkbox,
+            conflict_checkbox,
+            conflict_start_dropdown,
+            conflict_end_dropdown,
         ]
     )
     display(widgets.VBox([controls, output]))
@@ -425,6 +504,9 @@ def create_relocation_vector_interface(
         "color_dropdown": color_dropdown,
         "basemap_dropdown": basemap_dropdown,
         "event_view_dropdown": event_view_dropdown,
+        "conflict_boundaries": conflict_boundaries,
+        "conflict_start_dropdown": conflict_start_dropdown,
+        "conflict_end_dropdown": conflict_end_dropdown,
         "output": output,
     }
 
@@ -502,6 +584,25 @@ def _normalize_event_view(event_view):
             % event_view
         )
     return aliases[event_view]
+
+
+def _geojson_geometry_lines(geometry):
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates") or []
+    if geometry_type == "LineString":
+        return [coordinates]
+    if geometry_type == "MultiLineString":
+        return list(coordinates)
+    if geometry_type == "Polygon":
+        return list(coordinates)
+    if geometry_type == "MultiPolygon":
+        return [ring for polygon in coordinates for ring in polygon]
+    if geometry_type == "GeometryCollection":
+        lines = []
+        for item in geometry.get("geometries") or []:
+            lines.extend(_geojson_geometry_lines(item))
+        return lines
+    return []
 
 
 def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
@@ -724,6 +825,53 @@ def _add_roads(ax, projection, transform, resolution="10m"):
         )
     except Exception:
         return
+
+
+def _add_conflict_boundaries(
+    ax,
+    boundaries,
+    start_date,
+    end_date,
+    transform,
+):
+    selected_dates = _conflict_dates_between(boundaries, start_date, end_date)
+    if not selected_dates:
+        return
+    color_map = plt.get_cmap("plasma")
+    denominator = max(1, len(selected_dates) - 1)
+    for index, date in enumerate(selected_dates):
+        lines = boundaries[date]
+        color = color_map(index / denominator)
+        linewidth = 1.4
+        alpha = 0.65 if len(selected_dates) > 2 else 0.95
+        first_line = True
+        for line in lines:
+            xs = [point[0] for point in line if len(point) >= 2]
+            ys = [point[1] for point in line if len(point) >= 2]
+            if len(xs) < 2:
+                continue
+            ax.plot(
+                xs,
+                ys,
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+                zorder=3.2,
+                label=("Conflict line %s" % date) if first_line else None,
+                **_transform_kwargs(transform),
+            )
+            first_line = False
+
+
+def _conflict_dates_between(boundaries, start_date, end_date):
+    if start_date is None or end_date is None:
+        return []
+    dates = sorted(boundaries)
+    start_date = str(start_date)
+    end_date = str(end_date)
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    return [date for date in dates if start_date <= date <= end_date]
 
 
 def _data_extent(df, stations):
