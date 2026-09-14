@@ -224,6 +224,24 @@ def available_color_columns(df):
     return columns
 
 
+def _filter_events_by_date_range(df, start_date, end_date, time_column):
+    pd = _require_pandas()
+    if time_column not in df.columns:
+        raise ValueError("Unknown event time column: %s" % time_column)
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    if start > end:
+        start, end = end, start
+    times = pd.to_datetime(df[time_column])
+    if start.time() == pd.Timestamp(start.date()).time():
+        start = pd.Timestamp(start.date())
+    if end.time() == pd.Timestamp(end.date()).time():
+        end = pd.Timestamp(end.date()) + pd.Timedelta(days=1) - pd.Timedelta(
+            microseconds=1
+        )
+    return df[(times >= start) & (times <= end)].copy()
+
+
 def plot_relocation_vectors(
     df,
     stations=None,
@@ -242,6 +260,8 @@ def plot_relocation_vectors(
     conflict_start_date=None,
     conflict_end_date=None,
     show_conflict_lines=True,
+    filter_events_to_conflict_dates=False,
+    event_time_column="original_time",
     vector_alpha=0.45,
     marker_size=16,
     cmap=None,
@@ -255,6 +275,14 @@ def plot_relocation_vectors(
     event_view = _normalize_event_view(event_view)
     if show_original is False and event_view == "both":
         event_view = "relocated"
+    extent_df = df
+    if filter_events_to_conflict_dates and conflict_start_date and conflict_end_date:
+        df = _filter_events_by_date_range(
+            df,
+            conflict_start_date,
+            conflict_end_date,
+            event_time_column,
+        )
 
     projection, transform, basemap = _cartopy_projection(use_cartopy, basemap)
     if ax is None:
@@ -272,7 +300,7 @@ def plot_relocation_vectors(
     if cmap is None:
         cmap = _default_colormap_for_column(df[color_by], color_by)
 
-    _add_base_map(ax, df, stations, projection, transform, basemap, osm_zoom)
+    _add_base_map(ax, extent_df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
         _add_roads(ax, projection, transform)
     if show_conflict_lines and conflict_boundaries:
@@ -319,7 +347,7 @@ def plot_relocation_vectors(
         )
 
     if show_cities:
-        _add_cities(ax, df, stations, transform)
+        _add_cities(ax, extent_df, stations, transform)
 
     _format_axes(ax, projection)
     if show_scale_bar:
@@ -362,7 +390,10 @@ def create_relocation_vector_interface(
     conflict_boundaries = None
     conflict_dates = []
     if conflict_geojson_path:
-        conflict_boundaries = load_conflict_boundaries(conflict_geojson_path)
+        if isinstance(conflict_geojson_path, dict):
+            conflict_boundaries = conflict_geojson_path
+        else:
+            conflict_boundaries = load_conflict_boundaries(conflict_geojson_path)
         conflict_dates = sorted(conflict_boundaries)
         if conflict_dates:
             if default_conflict_start_date not in conflict_boundaries:
@@ -432,6 +463,11 @@ def create_relocation_vector_interface(
         description="Conflict lines",
         disabled=not bool(conflict_boundaries),
     )
+    filter_events_checkbox = widgets.Checkbox(
+        value=bool(conflict_boundaries),
+        description="Filter events",
+        disabled=not bool(conflict_boundaries),
+    )
     conflict_start_dropdown = widgets.Dropdown(
         options=conflict_dates if conflict_dates else [("No conflict file", None)],
         value=default_conflict_start_date if conflict_dates else None,
@@ -465,6 +501,7 @@ def create_relocation_vector_interface(
                 conflict_start_date=conflict_start_dropdown.value,
                 conflict_end_date=conflict_end_dropdown.value,
                 show_conflict_lines=conflict_checkbox.value,
+                filter_events_to_conflict_dates=filter_events_checkbox.value,
             )
             plt.show()
 
@@ -476,6 +513,7 @@ def create_relocation_vector_interface(
         roads_checkbox,
         scale_bar_checkbox,
         conflict_checkbox,
+        filter_events_checkbox,
         conflict_start_dropdown,
         conflict_end_dropdown,
     ]:
@@ -492,6 +530,7 @@ def create_relocation_vector_interface(
             roads_checkbox,
             scale_bar_checkbox,
             conflict_checkbox,
+            filter_events_checkbox,
             conflict_start_dropdown,
             conflict_end_dropdown,
         ]
@@ -505,6 +544,7 @@ def create_relocation_vector_interface(
         "basemap_dropdown": basemap_dropdown,
         "event_view_dropdown": event_view_dropdown,
         "conflict_boundaries": conflict_boundaries,
+        "filter_events_checkbox": filter_events_checkbox,
         "conflict_start_dropdown": conflict_start_dropdown,
         "conflict_end_dropdown": conflict_end_dropdown,
         "output": output,
