@@ -18,7 +18,6 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
-from typing import Iterable
 
 from hypodd_quality_report import read_hypodd_locations
 
@@ -469,6 +468,145 @@ def compute_event_context_distances(
         "n_events": len(rows),
         "warnings": warnings,
     }
+
+
+def _read_distance_rows(table):
+    if isinstance(table, (str, Path)):
+        with Path(table).expanduser().open("r", newline="", encoding="utf-8-sig") as handle:
+            return list(csv.DictReader(handle))
+    if hasattr(table, "to_dict"):
+        return table.to_dict(orient="records")
+    return list(table)
+
+
+def _numeric_column(rows, column):
+    values = []
+    for row in rows:
+        value = row.get(column, "")
+        if value in ("", None):
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isnan(value):
+            values.append(value)
+    return values
+
+
+def _auto_bins(values, max_bins=60):
+    if not values:
+        return 10
+    unique_values = sorted(set(values))
+    if len(unique_values) <= 1:
+        center = unique_values[0]
+        width = max(abs(center) * 0.05, 0.5)
+        return [center - width, center + width]
+    return min(max_bins, max(12, int(math.sqrt(len(values)) * 2)))
+
+
+def plot_distance_distributions(
+    distance_table,
+    features=("frontline", "town", "road", "river"),
+    bins=None,
+    density=False,
+    output_path=None,
+    title="Event distances to geographic context",
+):
+    """
+    Plot 1-D distributions of original and relocated distances.
+
+    ``distance_table`` can be the CSV path written by
+    :func:`compute_event_context_distances`, a pandas DataFrame, or an iterable
+    of row dictionaries. The function returns ``(fig, axes)``.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required for plotting distributions") from exc
+
+    rows = _read_distance_rows(distance_table)
+    if not rows:
+        raise ValueError("No distance rows were provided.")
+
+    features = list(features)
+    n_features = len(features)
+    ncols = 2 if n_features > 1 else 1
+    nrows = int(math.ceil(n_features / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(6.0 * ncols, 3.8 * nrows),
+        constrained_layout=True,
+        squeeze=False,
+    )
+
+    for ax, feature in zip(axes.ravel(), features):
+        original_column = "original_%s_distance_km" % feature
+        relocated_column = "relocated_%s_distance_km" % feature
+        original_values = _numeric_column(rows, original_column)
+        relocated_values = _numeric_column(rows, relocated_column)
+        all_values = original_values + relocated_values
+
+        if not all_values:
+            ax.text(
+                0.5,
+                0.5,
+                "No %s distances" % feature,
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_axis_off()
+            continue
+
+        feature_bins = bins if bins is not None else _auto_bins(all_values)
+        ax.hist(
+            original_values,
+            bins=feature_bins,
+            density=density,
+            histtype="stepfilled",
+            alpha=0.35,
+            color="#4C78A8",
+            label="Original",
+        )
+        ax.hist(
+            relocated_values,
+            bins=feature_bins,
+            density=density,
+            histtype="step",
+            linewidth=1.8,
+            color="#F58518",
+            label="Relocated",
+        )
+        ax.axvline(
+            sum(original_values) / len(original_values),
+            color="#4C78A8",
+            linestyle="--",
+            linewidth=1.1,
+            alpha=0.9,
+        )
+        ax.axvline(
+            sum(relocated_values) / len(relocated_values),
+            color="#F58518",
+            linestyle="--",
+            linewidth=1.1,
+            alpha=0.9,
+        )
+        ax.set_title("%s distance" % feature.capitalize())
+        ax.set_xlabel("Distance (km)")
+        ax.set_ylabel("Density" if density else "Event count")
+        ax.grid(True, alpha=0.25, linewidth=0.6)
+        ax.legend(frameon=False)
+
+    for ax in axes.ravel()[n_features:]:
+        ax.set_axis_off()
+
+    if title:
+        fig.suptitle(title)
+    if output_path is not None:
+        fig.savefig(output_path, dpi=200)
+    return fig, axes
 
 
 def build_arg_parser():
