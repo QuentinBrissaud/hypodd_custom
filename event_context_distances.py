@@ -494,6 +494,130 @@ def _numeric_column(rows, column):
     return values
 
 
+def _as_float(value):
+    if value in ("", None):
+        return math.nan
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return math.nan
+    return value
+
+
+def _distance_passes(row, feature, max_distance_km, location):
+    columns = {
+        "original": "original_%s_distance_km" % feature,
+        "relocated": "relocated_%s_distance_km" % feature,
+    }
+    original = _as_float(row.get(columns["original"], ""))
+    relocated = _as_float(row.get(columns["relocated"], ""))
+
+    if location == "original":
+        return not math.isnan(original) and original <= max_distance_km
+    if location == "relocated":
+        return not math.isnan(relocated) and relocated <= max_distance_km
+    if location == "either":
+        return (
+            not math.isnan(original)
+            and original <= max_distance_km
+            or not math.isnan(relocated)
+            and relocated <= max_distance_km
+        )
+    if location == "both":
+        return (
+            not math.isnan(original)
+            and original <= max_distance_km
+            and not math.isnan(relocated)
+            and relocated <= max_distance_km
+        )
+    raise ValueError(
+        "Unsupported location %s. Use original, relocated, either, or both."
+        % location
+    )
+
+
+def _distance_thresholds(
+    max_distance_km=None,
+    max_frontline_distance_km=None,
+    max_town_distance_km=None,
+    max_road_distance_km=None,
+    max_river_distance_km=None,
+):
+    thresholds = {
+        "frontline": max_frontline_distance_km,
+        "town": max_town_distance_km,
+        "road": max_road_distance_km,
+        "river": max_river_distance_km,
+    }
+    if max_distance_km is not None:
+        for feature in thresholds:
+            if thresholds[feature] is None:
+                thresholds[feature] = max_distance_km
+    return {feature: value for feature, value in thresholds.items() if value is not None}
+
+
+def filter_events_by_context_distance(
+    distance_table,
+    max_distance_km=None,
+    max_frontline_distance_km=None,
+    max_town_distance_km=None,
+    max_road_distance_km=None,
+    max_river_distance_km=None,
+    location="relocated",
+    output_csv=None,
+):
+    """
+    Keep only events within user-defined distances of selected context layers.
+
+    ``distance_table`` can be the CSV path written by
+    :func:`compute_event_context_distances`, a pandas DataFrame, or an iterable
+    of row dictionaries.
+
+    By default thresholds are applied to the relocated distances. Set
+    ``location`` to ``"original"``, ``"either"``, or ``"both"`` to change that
+    behavior. Multiple thresholds are combined with AND logic: an event must
+    pass every supplied cutoff.
+    """
+    thresholds = _distance_thresholds(
+        max_distance_km=max_distance_km,
+        max_frontline_distance_km=max_frontline_distance_km,
+        max_town_distance_km=max_town_distance_km,
+        max_road_distance_km=max_road_distance_km,
+        max_river_distance_km=max_river_distance_km,
+    )
+    if not thresholds:
+        raise ValueError("At least one distance threshold must be supplied.")
+
+    input_is_dataframe = hasattr(distance_table, "to_dict")
+    rows = _read_distance_rows(distance_table)
+    filtered_rows = []
+    for row in rows:
+        keep = True
+        for feature, max_distance in thresholds.items():
+            if not _distance_passes(row, feature, float(max_distance), location):
+                keep = False
+                break
+        if keep:
+            filtered_rows.append(row)
+
+    if output_csv is not None:
+        output_csv = Path(output_csv).expanduser()
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = list(rows[0]) if rows else []
+        with output_csv.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(filtered_rows)
+
+    if input_is_dataframe:
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError("pandas is required to return a filtered DataFrame") from exc
+        return pd.DataFrame(filtered_rows, columns=list(distance_table.columns))
+    return filtered_rows
+
+
 def _auto_bins(values, max_bins=60):
     if not values:
         return 10
@@ -512,6 +636,12 @@ def plot_distance_distributions(
     density=False,
     output_path=None,
     title="Event distances to geographic context",
+    max_distance_km=None,
+    max_frontline_distance_km=None,
+    max_town_distance_km=None,
+    max_road_distance_km=None,
+    max_river_distance_km=None,
+    filter_location="relocated",
 ):
     """
     Plot 1-D distributions of original and relocated distances.
@@ -525,7 +655,27 @@ def plot_distance_distributions(
     except ImportError as exc:
         raise ImportError("matplotlib is required for plotting distributions") from exc
 
-    rows = _read_distance_rows(distance_table)
+    thresholds = _distance_thresholds(
+        max_distance_km=max_distance_km,
+        max_frontline_distance_km=max_frontline_distance_km,
+        max_town_distance_km=max_town_distance_km,
+        max_road_distance_km=max_road_distance_km,
+        max_river_distance_km=max_river_distance_km,
+    )
+    if thresholds:
+        rows = filter_events_by_context_distance(
+            distance_table,
+            max_distance_km=max_distance_km,
+            max_frontline_distance_km=max_frontline_distance_km,
+            max_town_distance_km=max_town_distance_km,
+            max_road_distance_km=max_road_distance_km,
+            max_river_distance_km=max_river_distance_km,
+            location=filter_location,
+        )
+        if hasattr(rows, "to_dict"):
+            rows = rows.to_dict(orient="records")
+    else:
+        rows = _read_distance_rows(distance_table)
     if not rows:
         raise ValueError("No distance rows were provided.")
 
