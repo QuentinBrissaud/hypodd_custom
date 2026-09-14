@@ -159,6 +159,7 @@ def load_relocation_vector_dataframe(path):
     df["depth_shift_km"] = df["relocated_depth_km"] - df["original_depth_km"]
     df["original_time"] = pd.to_datetime(df["original_time"])
     df["relocated_time"] = pd.to_datetime(df["relocated_time"])
+    df["event_date"] = df["original_time"].dt.strftime("%Y-%m-%d")
     df["origin_time_shift_s"] = (
         df["relocated_time"] - df["original_time"]
     ).dt.total_seconds()
@@ -201,6 +202,7 @@ def available_color_columns(df):
     pd = _require_pandas()
     preferred = [
         "cluster_id",
+        "event_date",
         "rms_ct_s",
         "rms_cc_s",
         "relocated_dd_mean_abs_s",
@@ -299,6 +301,16 @@ def plot_relocation_vectors(
 
     if cmap is None:
         cmap = _default_colormap_for_column(df[color_by], color_by)
+    category_color_lookup = None
+    if color_by == "event_date":
+        date_values = _color_dates_for_events(
+            df,
+            conflict_boundaries,
+            conflict_start_date,
+            conflict_end_date,
+        )
+        category_color_lookup = _date_color_lookup(date_values)
+        cmap = "plasma"
 
     _add_base_map(ax, extent_df, stations, projection, transform, basemap, osm_zoom)
     if show_roads:
@@ -312,7 +324,15 @@ def plot_relocation_vectors(
             transform,
         )
     if event_view == "both":
-        _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha)
+        _plot_vectors(
+            ax,
+            df,
+            color_by,
+            cmap,
+            transform,
+            vector_alpha,
+            category_color_lookup=category_color_lookup,
+        )
 
     scatter = None
     if event_view in ["both", "original"]:
@@ -325,11 +345,18 @@ def plot_relocation_vectors(
             transform,
             marker_size,
             colors=original_colors,
+            category_color_lookup=category_color_lookup,
         )
 
     if event_view in ["both", "relocated"]:
         scatter = _plot_relocated_events(
-            ax, df, color_by, cmap, transform, marker_size
+            ax,
+            df,
+            color_by,
+            cmap,
+            transform,
+            marker_size,
+            category_color_lookup=category_color_lookup,
         )
 
     if show_stations and stations is not None and len(stations):
@@ -645,8 +672,21 @@ def _geojson_geometry_lines(geometry):
     return []
 
 
-def _plot_vectors(ax, df, color_by, cmap, transform, vector_alpha):
-    colors, _, _ = _colors_for_column(df[color_by], cmap, color_by)
+def _plot_vectors(
+    ax,
+    df,
+    color_by,
+    cmap,
+    transform,
+    vector_alpha,
+    category_color_lookup=None,
+):
+    colors, _, _ = _colors_for_column(
+        df[color_by],
+        cmap,
+        color_by,
+        category_color_lookup=category_color_lookup,
+    )
     for (_, row), color in zip(df.iterrows(), colors):
         ax.plot(
             [row["original_longitude"], row["relocated_longitude"]],
@@ -667,6 +707,7 @@ def _plot_original_events(
     transform,
     marker_size,
     colors=None,
+    category_color_lookup=None,
 ):
     if colors is not None:
         return ax.scatter(
@@ -679,7 +720,12 @@ def _plot_original_events(
             zorder=4,
             **_transform_kwargs(transform),
         )
-    colors, values, norm = _colors_for_column(df[color_by], cmap, color_by)
+    colors, values, norm = _colors_for_column(
+        df[color_by],
+        cmap,
+        color_by,
+        category_color_lookup=category_color_lookup,
+    )
     if _is_categorical(df[color_by], color_by):
         return ax.scatter(
             df["original_longitude"],
@@ -705,8 +751,21 @@ def _plot_original_events(
     )
 
 
-def _plot_relocated_events(ax, df, color_by, cmap, transform, marker_size):
-    colors, values, norm = _colors_for_column(df[color_by], cmap, color_by)
+def _plot_relocated_events(
+    ax,
+    df,
+    color_by,
+    cmap,
+    transform,
+    marker_size,
+    category_color_lookup=None,
+):
+    colors, values, norm = _colors_for_column(
+        df[color_by],
+        cmap,
+        color_by,
+        category_color_lookup=category_color_lookup,
+    )
     if _is_categorical(df[color_by], color_by):
         return ax.scatter(
             df["relocated_longitude"],
@@ -750,11 +809,14 @@ def _default_colormap_for_column(series, color_by=None):
     return "viridis"
 
 
-def _colors_for_column(series, cmap, color_by=None):
+def _colors_for_column(series, cmap, color_by=None, category_color_lookup=None):
     pd = _require_pandas()
     if _is_categorical(series, color_by):
         categories = sorted(series.dropna().unique(), key=str)
-        by_category = _category_color_lookup(categories, cmap)
+        by_category = category_color_lookup or _category_color_lookup(
+            categories,
+            cmap,
+        )
         colors = [by_category.get(value, "0.55") for value in series]
         return colors, None, None
 
@@ -877,11 +939,10 @@ def _add_conflict_boundaries(
     selected_dates = _conflict_dates_between(boundaries, start_date, end_date)
     if not selected_dates:
         return
-    color_map = plt.get_cmap("plasma")
-    denominator = max(1, len(selected_dates) - 1)
+    by_date = _date_color_lookup(selected_dates)
     for index, date in enumerate(selected_dates):
         lines = boundaries[date]
-        color = color_map(index / denominator)
+        color = by_date[date]
         linewidth = 1.4
         alpha = 0.65 if len(selected_dates) > 2 else 0.95
         first_line = True
@@ -912,6 +973,26 @@ def _conflict_dates_between(boundaries, start_date, end_date):
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     return [date for date in dates if start_date <= date <= end_date]
+
+
+def _date_color_lookup(dates):
+    dates = sorted(str(date) for date in dates)
+    color_map = plt.get_cmap("plasma")
+    denominator = max(1, len(dates) - 1)
+    return {
+        date: color_map(index / denominator)
+        for index, date in enumerate(dates)
+    }
+
+
+def _color_dates_for_events(df, boundaries, start_date, end_date):
+    if boundaries and start_date is not None and end_date is not None:
+        dates = _conflict_dates_between(boundaries, start_date, end_date)
+        if dates:
+            return dates
+    if "event_date" in df.columns:
+        return sorted(str(value) for value in df["event_date"].dropna().unique())
+    return []
 
 
 def _data_extent(df, stations):
