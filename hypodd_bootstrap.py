@@ -517,8 +517,306 @@ def summarize_bootstrap_location_sets(reference_locations, trial_locations):
             row["horizontal_shift_km_p95"] = sorted(horizontal)[
                 int(0.95 * (len(horizontal) - 1))
             ]
+            row.update(_horizontal_uncertainty_ellipse(dx, dy))
         summary.append(row)
     return summary
+
+
+def _horizontal_uncertainty_ellipse(dx_km, dy_km):
+    """
+    Return event-wise horizontal covariance sigmas and major-axis azimuth.
+
+    ``dx_km`` is positive east and ``dy_km`` is positive north. The azimuth is
+    the major-axis direction in degrees clockwise from north, modulo 180.
+    """
+    n_values = len(dx_km)
+    if n_values < 2:
+        return {
+            "sigma_x_km": math.nan,
+            "sigma_y_km": math.nan,
+            "cov_xy_km2": math.nan,
+            "sigma_major_km": math.nan,
+            "sigma_minor_km": math.nan,
+            "ellipse_azimuth_deg": math.nan,
+            "ellipse_68_major_km": math.nan,
+            "ellipse_68_minor_km": math.nan,
+            "ellipse_95_major_km": math.nan,
+            "ellipse_95_minor_km": math.nan,
+        }
+
+    mean_x = sum(dx_km) / n_values
+    mean_y = sum(dy_km) / n_values
+    var_x = sum((value - mean_x) ** 2 for value in dx_km) / (n_values - 1)
+    var_y = sum((value - mean_y) ** 2 for value in dy_km) / (n_values - 1)
+    cov_xy = sum(
+        (x - mean_x) * (y - mean_y) for x, y in zip(dx_km, dy_km)
+    ) / (n_values - 1)
+
+    trace = var_x + var_y
+    difference = var_x - var_y
+    discriminant = math.sqrt(max(0.0, difference * difference + 4.0 * cov_xy * cov_xy))
+    eigen_major = max(0.0, 0.5 * (trace + discriminant))
+    eigen_minor = max(0.0, 0.5 * (trace - discriminant))
+
+    if abs(cov_xy) < 1e-15 and var_x >= var_y:
+        major_x, major_y = 1.0, 0.0
+    elif abs(cov_xy) < 1e-15:
+        major_x, major_y = 0.0, 1.0
+    else:
+        major_x = cov_xy
+        major_y = eigen_major - var_x
+        norm = math.hypot(major_x, major_y)
+        major_x /= norm
+        major_y /= norm
+
+    azimuth = math.degrees(math.atan2(major_x, major_y)) % 180.0
+    sigma_major = math.sqrt(eigen_major)
+    sigma_minor = math.sqrt(eigen_minor)
+
+    # Scale factors for a 2-D Gaussian confidence ellipse:
+    # sqrt(chi2.ppf(0.68, 2)) ~= 1.5096, sqrt(chi2.ppf(0.95, 2)) ~= 2.4477.
+    scale_68 = 1.5095921854516636
+    scale_95 = 2.447746830680816
+    return {
+        "sigma_x_km": math.sqrt(max(0.0, var_x)),
+        "sigma_y_km": math.sqrt(max(0.0, var_y)),
+        "cov_xy_km2": cov_xy,
+        "sigma_major_km": sigma_major,
+        "sigma_minor_km": sigma_minor,
+        "ellipse_azimuth_deg": azimuth,
+        "ellipse_68_major_km": scale_68 * sigma_major,
+        "ellipse_68_minor_km": scale_68 * sigma_minor,
+        "ellipse_95_major_km": scale_95 * sigma_major,
+        "ellipse_95_minor_km": scale_95 * sigma_minor,
+    }
+
+
+def _read_bootstrap_uncertainty_csv(path):
+    path = Path(path)
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _float_or_nan(value):
+    if value in ("", None):
+        return math.nan
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def _ellipse_width_height_degrees(lat, major_km, minor_km):
+    km_per_degree_lat = 111.32
+    km_per_degree_lon = 111.32 * math.cos(math.radians(lat))
+    if abs(km_per_degree_lon) < 1e-12:
+        km_per_degree_lon = 1e-12
+    return 2.0 * major_km / km_per_degree_lon, 2.0 * minor_km / km_per_degree_lat
+
+
+def plot_bootstrap_event_uncertainties(
+    working_dir,
+    uncertainty_csv=None,
+    confidence="95",
+    scale=1.0,
+    min_n_trials=2,
+    max_ellipses=None,
+    ellipse_stride=1,
+    color_by="ellipse_95_major_km",
+    cmap="magma_r",
+    use_cartopy=True,
+    show_events=True,
+    show_ellipses=True,
+    ellipse_alpha=0.28,
+    marker_size=12,
+    ax=None,
+    output_path=None,
+):
+    """
+    Plot relocated events with event-wise bootstrap horizontal uncertainty.
+
+    Parameters
+    ----------
+    working_dir
+        Completed HypoDDPy run folder.
+    uncertainty_csv
+        Optional path to ``bootstrap_location_uncertainty.csv``. Defaults to
+        ``working_dir/bootstrap/bootstrap_location_uncertainty.csv``.
+    confidence
+        Which ellipse columns to plot: ``"sigma"``, ``"68"``, or ``"95"``.
+    scale
+        Extra visual scale factor applied to ellipse axes.
+    min_n_trials
+        Only plot uncertainty for events present in at least this many
+        successful bootstrap trials.
+    max_ellipses, ellipse_stride
+        Optional thinning controls for crowded maps. Event points are still
+        plotted for all rows that pass ``min_n_trials``.
+
+    Returns ``(fig, ax, plotted_rows)``.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Ellipse
+    except ImportError as exc:
+        raise ImportError("matplotlib is required to plot bootstrap uncertainty") from exc
+
+    working_dir = Path(working_dir)
+    output_dir = _resolve_output_dir(working_dir)
+    if uncertainty_csv is None:
+        uncertainty_csv = working_dir / "bootstrap" / "bootstrap_location_uncertainty.csv"
+    uncertainty_rows = _read_bootstrap_uncertainty_csv(uncertainty_csv)
+    locations = read_hypodd_locations(output_dir / "hypoDD.reloc")
+
+    confidence = str(confidence).lower()
+    if confidence in ("1", "1sigma", "sigma"):
+        major_column = "sigma_major_km"
+        minor_column = "sigma_minor_km"
+        label = "1-sigma"
+    elif confidence in ("68", "0.68", "68%"):
+        major_column = "ellipse_68_major_km"
+        minor_column = "ellipse_68_minor_km"
+        label = "68%"
+    elif confidence in ("95", "0.95", "95%"):
+        major_column = "ellipse_95_major_km"
+        minor_column = "ellipse_95_minor_km"
+        label = "95%"
+    else:
+        raise ValueError("confidence must be 'sigma', '68', or '95'.")
+
+    required = {major_column, minor_column, "ellipse_azimuth_deg", "event_id"}
+    missing = sorted(required.difference(uncertainty_rows[0] if uncertainty_rows else {}))
+    if missing:
+        raise ValueError(
+            "Missing bootstrap uncertainty column(s): %s. Rerun bootstrap after "
+            "the event-wise ellipse update." % ", ".join(missing)
+        )
+
+    plotted_rows = []
+    for row in uncertainty_rows:
+        event_id = int(float(row["event_id"]))
+        location = locations.get(event_id)
+        if location is None:
+            continue
+        n_trials = int(float(row.get("n_trials") or 0))
+        if n_trials < min_n_trials:
+            continue
+        major_km = _float_or_nan(row.get(major_column))
+        minor_km = _float_or_nan(row.get(minor_column))
+        azimuth = _float_or_nan(row.get("ellipse_azimuth_deg"))
+        if not all(math.isfinite(value) for value in [major_km, minor_km, azimuth]):
+            continue
+        current = dict(row)
+        current.update(location)
+        current["uncertainty_major_km"] = major_km
+        current["uncertainty_minor_km"] = minor_km
+        current["uncertainty_azimuth_deg"] = azimuth
+        plotted_rows.append(current)
+
+    if not plotted_rows:
+        raise ValueError("No events had usable bootstrap uncertainty rows.")
+
+    projection = None
+    transform = None
+    if use_cartopy:
+        try:
+            import cartopy.crs as ccrs
+
+            projection = ccrs.PlateCarree()
+            transform = ccrs.PlateCarree()
+        except ImportError:
+            projection = None
+            transform = None
+
+    if ax is None:
+        if projection is None:
+            fig, ax = plt.subplots(figsize=(9, 8))
+        else:
+            fig = plt.figure(figsize=(9, 8))
+            ax = plt.axes(projection=projection)
+    else:
+        fig = ax.figure
+
+    lons = [row["longitude"] for row in plotted_rows]
+    lats = [row["latitude"] for row in plotted_rows]
+    values = [_float_or_nan(row.get(color_by)) for row in plotted_rows]
+    if not any(math.isfinite(value) for value in values):
+        color_by = "uncertainty_major_km"
+        values = [row["uncertainty_major_km"] for row in plotted_rows]
+
+    lon_pad = max(0.25, (max(lons) - min(lons)) * 0.12)
+    lat_pad = max(0.25, (max(lats) - min(lats)) * 0.12)
+    extent = [min(lons) - lon_pad, max(lons) + lon_pad, min(lats) - lat_pad, max(lats) + lat_pad]
+
+    if projection is not None:
+        ax.set_extent(extent, crs=transform)
+        try:
+            import cartopy.feature as cfeature
+
+            ax.add_feature(cfeature.LAND, facecolor="0.96")
+            ax.add_feature(cfeature.OCEAN, facecolor="0.90")
+            ax.add_feature(cfeature.BORDERS, linewidth=0.8)
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+            ax.add_feature(cfeature.RIVERS, linewidth=0.45, edgecolor="0.55")
+        except Exception:
+            pass
+    else:
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+
+    scatter = None
+    transform_kwargs = {"transform": transform} if transform is not None else {}
+    if show_events:
+        scatter = ax.scatter(
+            lons,
+            lats,
+            c=values,
+            cmap=cmap,
+            s=marker_size,
+            edgecolors="none",
+            zorder=5,
+            **transform_kwargs,
+        )
+        colorbar = fig.colorbar(scatter, ax=ax, fraction=0.035, pad=0.02)
+        colorbar.set_label(color_by)
+
+    ellipse_rows = plotted_rows[:: max(1, int(ellipse_stride))]
+    if max_ellipses is not None:
+        ellipse_rows = ellipse_rows[: int(max_ellipses)]
+
+    if show_ellipses:
+        for row in ellipse_rows:
+            width, height = _ellipse_width_height_degrees(
+                row["latitude"],
+                row["uncertainty_major_km"] * scale,
+                row["uncertainty_minor_km"] * scale,
+            )
+            # Matplotlib ellipse angle is counterclockwise from east; our
+            # azimuth is clockwise from north.
+            angle = 90.0 - row["uncertainty_azimuth_deg"]
+            ellipse = Ellipse(
+                (row["longitude"], row["latitude"]),
+                width=width,
+                height=height,
+                angle=angle,
+                facecolor="none",
+                edgecolor="black",
+                linewidth=0.6,
+                alpha=ellipse_alpha,
+                zorder=6,
+                transform=transform,
+            )
+            ax.add_patch(ellipse)
+
+    ax.set_title(
+        "Bootstrap event uncertainty (%s ellipses, %i events)" % (label, len(plotted_rows))
+    )
+    if output_path is not None:
+        fig.savefig(output_path, dpi=200)
+    return fig, ax, plotted_rows
 
 
 def _write_csv(path, rows):
