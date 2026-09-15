@@ -71,6 +71,210 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
+def _read_station_file(path):
+    stations = {}
+    path = Path(path)
+    if not path.exists():
+        return stations
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                stations[parts[0]] = {
+                    "station_id": parts[0],
+                    "latitude": float(parts[1]),
+                    "longitude": float(parts[2]),
+                }
+            except ValueError:
+                continue
+    return stations
+
+
+def _read_csv_rows(path):
+    path = Path(path)
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _float_or_nan(value):
+    if value in ("", None):
+        return math.nan
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def _station_coordinates_for_run(working_dir):
+    working_dir = Path(working_dir)
+    stations = {}
+    try:
+        input_dir = _resolve_input_dir(working_dir)
+        stations.update(_read_station_file(input_dir / "station.sel"))
+    except FileNotFoundError:
+        pass
+    try:
+        output_dir = _resolve_output_dir(working_dir)
+        stations.update(_read_station_file(output_dir / "hypoDD.sta"))
+    except FileNotFoundError:
+        pass
+    if not stations:
+        raise FileNotFoundError(
+            "Could not find station coordinates in station.sel or hypoDD.sta "
+            "for %s." % working_dir
+        )
+    return stations
+
+
+def plot_jackknife_station_impact_map(
+    working_dir,
+    impact_csv=None,
+    metric="p95_horizontal_shift_km",
+    use_cartopy=True,
+    cmap="viridis",
+    marker_size=85,
+    annotate=True,
+    ax=None,
+    output_path=None,
+):
+    """
+    Plot stations color-coded by a station-jackknife impact metric.
+
+    Parameters
+    ----------
+    working_dir
+        Completed HypoDDPy run folder.
+    impact_csv
+        Optional path to ``station_jackknife_impact.csv``. Defaults to
+        ``working_dir/jackknife/station_jackknife_impact.csv``.
+    metric
+        Column from the station impact CSV used for color, for example
+        ``p95_horizontal_shift_km``, ``median_horizontal_shift_km``,
+        ``max_horizontal_shift_km``, or ``lost_reference_event_count``.
+
+    Returns ``(fig, ax, rows)`` where rows are the station rows that were
+    successfully matched with coordinates.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required to plot jackknife station impact") from exc
+
+    working_dir = Path(working_dir)
+    if impact_csv is None:
+        impact_csv = working_dir / "jackknife" / "station_jackknife_impact.csv"
+    impact_rows = _read_csv_rows(impact_csv)
+    if not impact_rows:
+        raise ValueError("No station jackknife impact rows found in %s." % impact_csv)
+    if metric not in impact_rows[0]:
+        raise ValueError(
+            "Metric %s was not found in %s. Available columns include: %s"
+            % (metric, impact_csv, ", ".join(sorted(impact_rows[0])[:20]))
+        )
+
+    stations = _station_coordinates_for_run(working_dir)
+    rows = []
+    for row in impact_rows:
+        station_id = row.get("target_id")
+        station = stations.get(station_id)
+        value = _float_or_nan(row.get(metric))
+        if station is None or not math.isfinite(value):
+            continue
+        current = dict(row)
+        current.update(station)
+        current["impact_value"] = value
+        rows.append(current)
+    if not rows:
+        raise ValueError(
+            "No station impact rows matched station coordinates. Check station IDs "
+            "in %s and station.sel/hypoDD.sta." % impact_csv
+        )
+
+    projection = None
+    transform = None
+    if use_cartopy:
+        try:
+            import cartopy.crs as ccrs
+
+            projection = ccrs.PlateCarree()
+            transform = ccrs.PlateCarree()
+        except ImportError:
+            projection = None
+            transform = None
+
+    if ax is None:
+        if projection is None:
+            fig, ax = plt.subplots(figsize=(8, 7))
+        else:
+            fig = plt.figure(figsize=(8, 7))
+            ax = plt.axes(projection=projection)
+    else:
+        fig = ax.figure
+
+    lons = [row["longitude"] for row in rows]
+    lats = [row["latitude"] for row in rows]
+    values = [row["impact_value"] for row in rows]
+    lon_pad = max(0.25, (max(lons) - min(lons)) * 0.25)
+    lat_pad = max(0.25, (max(lats) - min(lats)) * 0.25)
+    extent = [
+        min(lons) - lon_pad,
+        max(lons) + lon_pad,
+        min(lats) - lat_pad,
+        max(lats) + lat_pad,
+    ]
+
+    transform_kwargs = {"transform": transform} if transform is not None else {}
+    if projection is not None:
+        ax.set_extent(extent, crs=transform)
+        try:
+            import cartopy.feature as cfeature
+
+            ax.add_feature(cfeature.LAND, facecolor="0.96")
+            ax.add_feature(cfeature.OCEAN, facecolor="0.90")
+            ax.add_feature(cfeature.BORDERS, linewidth=0.8)
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+            ax.add_feature(cfeature.RIVERS, linewidth=0.45, edgecolor="0.55")
+        except Exception:
+            pass
+    else:
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+
+    scatter = ax.scatter(
+        lons,
+        lats,
+        c=values,
+        cmap=cmap,
+        s=marker_size,
+        edgecolors="black",
+        linewidths=0.5,
+        zorder=5,
+        **transform_kwargs,
+    )
+    if annotate:
+        for row in rows:
+            ax.text(
+                row["longitude"] + 0.02,
+                row["latitude"] + 0.02,
+                row["station_id"],
+                fontsize=7,
+                zorder=6,
+                **transform_kwargs,
+            )
+    colorbar = fig.colorbar(scatter, ax=ax, fraction=0.035, pad=0.02)
+    colorbar.set_label(metric)
+    ax.set_title("Station jackknife impact: %s" % metric)
+    fig.tight_layout()
+    if output_path is not None:
+        fig.savefig(output_path, dpi=200)
+    return fig, ax, rows
+
+
 def _all_stations(blocks_by_type):
     stations = set()
     for blocks in blocks_by_type.values():
