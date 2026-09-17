@@ -819,6 +819,189 @@ def plot_bootstrap_event_uncertainties(
     return fig, ax, plotted_rows
 
 
+def _bootstrap_uncertainty_rows_with_locations(
+    working_dir,
+    uncertainty_csv=None,
+    metric="ellipse_95_major_km",
+    min_n_trials=2,
+):
+    working_dir = Path(working_dir)
+    output_dir = _resolve_output_dir(working_dir)
+    if uncertainty_csv is None:
+        uncertainty_csv = working_dir / "bootstrap" / "bootstrap_location_uncertainty.csv"
+    uncertainty_rows = _read_bootstrap_uncertainty_csv(uncertainty_csv)
+    if not uncertainty_rows:
+        raise ValueError("No bootstrap uncertainty rows found in %s." % uncertainty_csv)
+    if metric not in uncertainty_rows[0]:
+        raise ValueError(
+            "Metric %s was not found in %s. Available columns include: %s"
+            % (metric, uncertainty_csv, ", ".join(sorted(uncertainty_rows[0])[:20]))
+        )
+
+    locations = read_hypodd_locations(output_dir / "hypoDD.reloc")
+    rows = []
+    for row in uncertainty_rows:
+        event_id = int(float(row["event_id"]))
+        location = locations.get(event_id)
+        if location is None:
+            continue
+        n_trials = int(float(row.get("n_trials") or 0))
+        value = _float_or_nan(row.get(metric))
+        if n_trials < min_n_trials or not math.isfinite(value):
+            continue
+        current = dict(row)
+        current.update(location)
+        current["uncertainty_value"] = value
+        current["event_month"] = location["time"].strftime("%Y-%m")
+        rows.append(current)
+    return rows
+
+
+def _group_bootstrap_uncertainty_rows(rows, group_by, max_groups=None, group_order="sorted"):
+    group_by = str(group_by).lower()
+    if group_by in ("cluster", "cluster_id"):
+        group_key = "cluster_id"
+        label = "Cluster"
+    elif group_by in ("month", "event_month"):
+        group_key = "event_month"
+        label = "Month"
+    else:
+        raise ValueError("group_by must be 'cluster' or 'month'.")
+
+    grouped = defaultdict(list)
+    for row in rows:
+        group = row.get(group_key)
+        if group in ("", None):
+            continue
+        grouped[group].append(row["uncertainty_value"])
+
+    if group_order == "size":
+        groups = sorted(grouped, key=lambda key: len(grouped[key]), reverse=True)
+    elif group_key == "cluster_id":
+        groups = sorted(grouped, key=lambda key: (float("inf") if key is None else key))
+    else:
+        groups = sorted(grouped, key=str)
+    if max_groups is not None:
+        groups = groups[: int(max_groups)]
+    values = [grouped[group] for group in groups]
+    return groups, values, label
+
+
+def plot_bootstrap_uncertainty_boxplots(
+    working_dir,
+    uncertainty_csv=None,
+    group_by="cluster",
+    metric="ellipse_95_major_km",
+    max_groups=None,
+    group_order="sorted",
+    min_n_trials=2,
+    scatter_alpha=0.45,
+    scatter_size=16,
+    jitter=0.18,
+    box_width=0.55,
+    ax=None,
+    output_path=None,
+):
+    """
+    Plot event-wise bootstrap uncertainty distributions by cluster or month.
+
+    The scattered points are plotted first, underneath the box plots, so the
+    figure shows both the actual event distribution and the grouped summary.
+
+    Parameters
+    ----------
+    working_dir
+        Completed HypoDDPy run folder.
+    uncertainty_csv
+        Optional path to ``bootstrap_location_uncertainty.csv``. Defaults to
+        ``working_dir/bootstrap/bootstrap_location_uncertainty.csv``.
+    group_by
+        ``"cluster"`` or ``"month"``.
+    metric
+        Numeric bootstrap uncertainty column to plot. Useful choices include
+        ``ellipse_95_major_km``, ``ellipse_68_major_km``, ``sigma_major_km``,
+        and ``horizontal_shift_km_p95``.
+    max_groups
+        Optional maximum number of clusters/months to show.
+    group_order
+        ``"sorted"`` or ``"size"``. ``"size"`` shows largest groups first.
+    min_n_trials
+        Ignore event uncertainty rows based on fewer successful bootstrap
+        trials.
+
+    Returns ``(fig, ax, grouped_rows)`` where grouped_rows is a list of
+    dictionaries containing the plotted group labels and values.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required to plot bootstrap boxplots") from exc
+
+    rows = _bootstrap_uncertainty_rows_with_locations(
+        working_dir,
+        uncertainty_csv=uncertainty_csv,
+        metric=metric,
+        min_n_trials=min_n_trials,
+    )
+    groups, values, group_label = _group_bootstrap_uncertainty_rows(
+        rows,
+        group_by=group_by,
+        max_groups=max_groups,
+        group_order=group_order,
+    )
+    if not groups:
+        raise ValueError("No groups with usable bootstrap uncertainty values were found.")
+
+    if ax is None:
+        width = max(8.0, min(18.0, 0.42 * len(groups) + 3.5))
+        fig, ax = plt.subplots(figsize=(width, 5.2))
+    else:
+        fig = ax.figure
+
+    rng = random.Random(12345)
+    positions = list(range(1, len(groups) + 1))
+    for position, group_values in zip(positions, values):
+        xs = [position + rng.uniform(-jitter, jitter) for _ in group_values]
+        ax.scatter(
+            xs,
+            group_values,
+            s=scatter_size,
+            color="#4C78A8",
+            alpha=scatter_alpha,
+            edgecolors="none",
+            zorder=1,
+        )
+
+    ax.boxplot(
+        values,
+        positions=positions,
+        widths=box_width,
+        patch_artist=True,
+        showfliers=False,
+        boxprops={"facecolor": "white", "edgecolor": "black", "linewidth": 1.1},
+        medianprops={"color": "#D62728", "linewidth": 1.4},
+        whiskerprops={"color": "black", "linewidth": 1.0},
+        capprops={"color": "black", "linewidth": 1.0},
+        zorder=2,
+    )
+    labels = [str(group) for group in groups]
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=45 if len(labels) > 8 else 0, ha="right")
+    ax.set_xlabel(group_label)
+    ax.set_ylabel("%s (km)" % metric)
+    ax.set_title("Bootstrap event uncertainty by %s" % group_label.lower())
+    ax.grid(True, axis="y", alpha=0.25, linewidth=0.6)
+    fig.tight_layout()
+    if output_path is not None:
+        fig.savefig(output_path, dpi=200)
+
+    grouped_rows = [
+        {"group": group, "values": group_values, "n_events": len(group_values)}
+        for group, group_values in zip(groups, values)
+    ]
+    return fig, ax, grouped_rows
+
+
 def _write_csv(path, rows):
     path = Path(path)
     if not rows:
