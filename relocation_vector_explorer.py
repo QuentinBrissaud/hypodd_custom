@@ -309,7 +309,16 @@ def plot_relocation_vectors(
             conflict_start_date,
             conflict_end_date,
         )
-        category_color_lookup = _date_color_lookup(date_values)
+        color_alpha = 1.0
+        if conflict_boundaries and conflict_start_date and conflict_end_date:
+            selected_dates = _conflict_dates_between(
+                conflict_boundaries,
+                conflict_start_date,
+                conflict_end_date,
+            )
+            if selected_dates:
+                color_alpha = _conflict_line_alpha(selected_dates)
+        category_color_lookup = _date_color_lookup(date_values, alpha=color_alpha)
         cmap = "plasma"
 
     _add_base_map(ax, extent_df, stations, projection, transform, basemap, osm_zoom)
@@ -322,6 +331,7 @@ def plot_relocation_vectors(
             conflict_start_date,
             conflict_end_date,
             transform,
+            date_color_lookup=category_color_lookup,
         )
     if event_view == "both":
         _plot_vectors(
@@ -935,16 +945,19 @@ def _add_conflict_boundaries(
     start_date,
     end_date,
     transform,
+    date_color_lookup=None,
 ):
     selected_dates = _conflict_dates_between(boundaries, start_date, end_date)
     if not selected_dates:
         return
-    by_date = _date_color_lookup(selected_dates)
+    by_date = date_color_lookup or _date_color_lookup(
+        selected_dates,
+        alpha=_conflict_line_alpha(selected_dates),
+    )
     for index, date in enumerate(selected_dates):
         lines = boundaries[date]
         color = by_date[date]
         linewidth = 1.4
-        alpha = 0.65 if len(selected_dates) > 2 else 0.95
         first_line = True
         for line in lines:
             xs = [point[0] for point in line if len(point) >= 2]
@@ -956,7 +969,6 @@ def _add_conflict_boundaries(
                 ys,
                 color=color,
                 linewidth=linewidth,
-                alpha=alpha,
                 zorder=3.2,
                 label=("Conflict line %s" % date) if first_line else None,
                 **_transform_kwargs(transform),
@@ -975,14 +987,21 @@ def _conflict_dates_between(boundaries, start_date, end_date):
     return [date for date in dates if start_date <= date <= end_date]
 
 
-def _date_color_lookup(dates):
+def _conflict_line_alpha(dates):
+    return 0.65 if len(dates) > 2 else 0.95
+
+
+def _date_color_lookup(dates, alpha=None):
     dates = sorted(str(date) for date in dates)
     color_map = plt.get_cmap("plasma")
     denominator = max(1, len(dates) - 1)
-    return {
-        date: color_map(index / denominator)
-        for index, date in enumerate(dates)
-    }
+    by_date = {}
+    for index, date in enumerate(dates):
+        color = color_map(index / denominator)
+        if alpha is not None:
+            color = (color[0], color[1], color[2], alpha)
+        by_date[date] = color
+    return by_date
 
 
 def _color_dates_for_events(df, boundaries, start_date, end_date):
