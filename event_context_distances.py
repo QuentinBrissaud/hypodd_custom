@@ -321,6 +321,34 @@ def _distance_change(original, relocated):
     return relocated - original
 
 
+def _parse_datetime_filter(value, end_of_day=False):
+    if value in ("", None):
+        return None
+    text = str(value)
+    parsed = datetime.fromisoformat(text)
+    if end_of_day and "T" not in text and len(text) == 10:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed
+
+
+def _filter_event_ids_by_time(event_ids, events, start_time=None, end_time=None):
+    start = _parse_datetime_filter(start_time)
+    end = _parse_datetime_filter(end_time, end_of_day=True)
+    if start is None and end is None:
+        return list(event_ids)
+    if start is not None and end is not None and start > end:
+        start, end = end, start
+    filtered = []
+    for event_id in event_ids:
+        event_time = events[event_id]["time"]
+        if start is not None and event_time < start:
+            continue
+        if end is not None and event_time > end:
+            continue
+        filtered.append(event_id)
+    return filtered
+
+
 def compute_event_context_distances(
     run_folder,
     frontline_geojson="data/daily_red_boundaries.geojson",
@@ -329,6 +357,8 @@ def compute_event_context_distances(
     frontline_date=None,
     frontline_start_date=None,
     frontline_end_date=None,
+    event_start_date=None,
+    event_end_date=None,
     include_natural_earth=True,
 ):
     """
@@ -342,8 +372,18 @@ def compute_event_context_distances(
     original_events = read_hypodd_locations(output_files / "hypoDD.loc")
     relocated_events = read_hypodd_locations(output_files / "hypoDD.reloc")
     common_event_ids = sorted(set(original_events) & set(relocated_events))
+    n_common_events = len(common_event_ids)
+    common_event_ids = _filter_event_ids_by_time(
+        common_event_ids,
+        original_events,
+        start_time=event_start_date,
+        end_time=event_end_date,
+    )
     if not common_event_ids:
-        raise ValueError("No common events found between hypoDD.loc and hypoDD.reloc.")
+        raise ValueError(
+            "No common events found between hypoDD.loc and hypoDD.reloc after "
+            "applying the requested event date filter."
+        )
 
     frontline_by_date = load_frontline_segments(frontline_geojson)
     bbox = event_bbox(
@@ -466,6 +506,9 @@ def compute_event_context_distances(
     return {
         "output_csv": output_csv,
         "n_events": len(rows),
+        "n_common_events_before_event_date_filter": n_common_events,
+        "event_start_date": event_start_date,
+        "event_end_date": event_end_date,
         "warnings": warnings,
     }
 
@@ -793,6 +836,19 @@ def build_arg_parser():
     parser.add_argument("--frontline-start-date", default=None)
     parser.add_argument("--frontline-end-date", default=None)
     parser.add_argument(
+        "--event-start-date",
+        default=None,
+        help="Only compute distances for events at or after this date/time.",
+    )
+    parser.add_argument(
+        "--event-end-date",
+        default=None,
+        help=(
+            "Only compute distances for events at or before this date/time. "
+            "A YYYY-MM-DD value includes the full end day."
+        ),
+    )
+    parser.add_argument(
         "--skip-natural-earth",
         action="store_true",
         help="Skip roads and rivers from Cartopy/Natural Earth.",
@@ -810,6 +866,8 @@ def main(argv=None):
         frontline_date=args.frontline_date,
         frontline_start_date=args.frontline_start_date,
         frontline_end_date=args.frontline_end_date,
+        event_start_date=args.event_start_date,
+        event_end_date=args.event_end_date,
         include_natural_earth=not args.skip_natural_earth,
     )
     print("Wrote %i events to %s" % (result["n_events"], result["output_csv"]))
